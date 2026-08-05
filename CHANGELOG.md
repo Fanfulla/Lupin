@@ -9,6 +9,22 @@ evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
 ## [0.1.1]
 
+### Known limitations
+
+- **Two installations on one machine can disagree about where a credential
+  lives.** The store promotes a secret from the 600 file into the OS keychain on
+  first read and then deletes the file copy, which is the documented steady
+  state (zero secrets on disk). But whether an installation HAS a keychain
+  depends on an optional native module and, on Linux, on a Secret Service being
+  present. So a keychain-capable install can promote a credential that a
+  file-only install on the same machine then cannot see, and the second one
+  reports `no OAuth credentials for "<provider>"` and tells the user to log in
+  again, which is the wrong advice: the credential is fine, it is simply
+  somewhere this install cannot read. Seen for real on 2026-08-05 between a
+  global install and a repository checkout without the optional dependency.
+  Workaround: install the optional dependency everywhere, or set
+  `LUPIN_CREDSTORE=file`.
+
 ### Fixed
 
 - **OAuth subscriptions were unusable on Windows whenever the OS keychain was

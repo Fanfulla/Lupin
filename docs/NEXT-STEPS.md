@@ -91,6 +91,8 @@ Six items closed in one session, all pushed to `main`, each with its ADR and its
 2. **The identity hint**: measured A/B on the same question. With the quirk the model names the real model and provider; without it, it claims to be Claude Opus 5 from Anthropic.
 3. **GitHub Copilot**: works end to end on a **free** account, up to a real tool call. Two bugs in the shared OAuth code had to be fixed first, and three UX defects around slot discovery are still open (ROADMAP, and SPEC-PROVIDERS §3quater.1).
 
+**Open defect worth knowing before you debug a phantom logout** (2026-08-05): the credential store promotes a secret from the file into the OS keychain on first read and deletes the file copy. Whether an install HAS a keychain depends on an optional native module, so a keychain-capable process (a global `npm i -g`) can promote a credential that a file-only process (this repository, if `@napi-rs/keyring` was never installed here) then cannot see. The symptom is `no OAuth credentials for "kimicode": run: lupin login kimi` on a credential that is perfectly intact. Fix the environment with `npm i @napi-rs/keyring` in the checkout, or force one backend with `LUPIN_CREDSTORE=file`. The real fix is a decision, not a patch: promotion could leave a non-secret marker behind so the file-only side can say what is actually happening instead of advising a pointless re-login.
+
 **Do not repeat these traps** (all measured 2026-08-05):
 
 - The Copilot account catalogue is **not** the list of usable models: 51 listed, 5 answered. `supported_endpoints` points the wrong way. Probe before believing.
