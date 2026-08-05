@@ -1,0 +1,3 @@
+# Captures are byte-exact recordings from real providers (ADR-10, TESTING.md).
+# Line-ending conversion corrupts them: SSE framing depends on literal \n\n.
+test/helpers/captures/** -text

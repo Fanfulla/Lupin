@@ -1,0 +1,23 @@
+{
+  "name": "finish-length",
+  "spec": "SPEC-TRANSLATION §10 case 9: max_tokens reached, so finish_reason length becomes stop_reason max_tokens",
+  "direction": "response",
+  "input": {
+    "id": "chatcmpl-len",
+    "model": "m",
+    "choices": [
+      { "index": 0, "message": { "role": "assistant", "content": "an answer truncated halfw" }, "finish_reason": "length" }
+    ],
+    "usage": { "prompt_tokens": 8, "completion_tokens": 4 }
+  },
+  "expected": {
+    "id": "msg_chatcmpl-len",
+    "type": "message",
+    "role": "assistant",
+    "model": "m",
+    "content": [{ "type": "text", "text": "an answer truncated halfw" }],
+    "stop_reason": "max_tokens",
+    "stop_sequence": null,
+    "usage": { "input_tokens": 8, "output_tokens": 4 }
+  }
+}

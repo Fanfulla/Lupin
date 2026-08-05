@@ -1,0 +1,203 @@
+// UX criterion SPEC-CLI §6.4: a mid-session daemon kill must surface a
+// comprehensible Anthropic error, and the next `lupin run` must start clean
+// (stale pidfile handled). The watchdog (src/server/watchdog.ts) is what
+// answers when the dead daemon cannot.
+
+import { Hono } from 'hono';
+import { serve } from '@hono/node-server';
+import type { ServerType } from '@hono/node-server';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { networkError } from '../src/core/errors.js';
+import { ensureWatchdog, entrypointArgs, pidfilePath, watchdogPidfilePath } from '../src/server/daemon.js';
+import { DAEMON_DOWN_MESSAGE, holdPortDown } from '../src/server/watchdog.js';
+
+const dir = mkdtempSync(join(tmpdir(), 'lupin-watchdog-'));
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe('stale pidfile handling (SPEC-CLI §6.4)', () => {
+  it('a pidfile pointing at a dead pid is treated as stale, not trusted', () => {
+    const pidfile = join(dir, 'lupin.pid');
+    writeFileSync(pidfile, '999999'); // a pid that cannot exist
+    const pid = Number(readFileSync(pidfile, 'utf8').trim());
+    let running = true;
+    try {
+      process.kill(pid, 0);
+    } catch {
+      running = false;
+    }
+    expect(running).toBe(false); // → ensureDaemon removes it and starts fresh
+    expect(existsSync(pidfile)).toBe(true); // until the daemon path clears it
+  });
+});
+
+describe('fallback error shape (Anthropic format, SPEC-TRANSLATION §6)', () => {
+  it('the down-message is a well-formed retryable 529, never "at capacity"', () => {
+    const err = networkError(DAEMON_DOWN_MESSAGE);
+    expect(err.status).toBe(529);
+    expect(err.body.type).toBe('error');
+    expect(err.body.error.type).toBe('overloaded_error');
+    expect(err.body.error.message).toContain('lupin run');
+    expect(err.body.error.message).not.toContain('at capacity');
+  });
+});
+
+// Audit 2026-07-22 gap `watchdog-respawn-gap` (verdict: missing). Two halves:
+// (a) the watchdog was only spawned on the fresh-start branch of ensureDaemon,
+// so a watchdog that died while the daemon lived was never replaced; (b) while
+// holding the port, a fresh `lupin run` spawned a daemon that could not bind —
+// the watchdog only released on health-OK, which needs the bind: a deadlock
+// until the 5-minute deadline.
+
+describe('ensureWatchdog (respawn gap, §6.4)', () => {
+  let restoreDir: string | undefined;
+  beforeEach(() => {
+    restoreDir = process.env.LUPIN_DIR;
+    process.env.LUPIN_DIR = dir;
+    mkdirSync(dir, { recursive: true }); // the module-level afterEach removes it between tests
+  });
+  afterEach(() => {
+    if (restoreDir === undefined) delete process.env.LUPIN_DIR;
+    else process.env.LUPIN_DIR = restoreDir;
+  });
+
+  it('spawns and records a watchdog when none is alive', () => {
+    let spawnedPort: number | undefined;
+    const out = ensureWatchdog(4114, () => {
+      spawnedPort = 4114;
+      return 12345;
+    });
+    expect(out).toBe('spawned');
+    expect(spawnedPort).toBe(4114);
+    expect(readFileSync(watchdogPidfilePath(), 'utf8').trim()).toBe('12345');
+  });
+
+  it('does not spawn a second watchdog while the recorded one is alive', () => {
+    writeFileSync(watchdogPidfilePath(), String(process.pid)); // our own pid: certainly alive
+    let called = false;
+    const out = ensureWatchdog(4114, () => {
+      called = true;
+      return 99999;
+    });
+    expect(out).toBe('already-running');
+    expect(called).toBe(false);
+  });
+
+  it('replaces a watchdog whose recorded pid is dead', () => {
+    writeFileSync(watchdogPidfilePath(), '999999'); // cannot exist
+    const out = ensureWatchdog(4114, () => 22222);
+    expect(out).toBe('spawned');
+    expect(readFileSync(watchdogPidfilePath(), 'utf8').trim()).toBe('22222');
+  });
+});
+
+describe('holdPortDown yields the port to a starting daemon (§6.4)', () => {
+  let restoreDir: string | undefined;
+  beforeEach(() => {
+    restoreDir = process.env.LUPIN_DIR;
+    process.env.LUPIN_DIR = dir;
+    mkdirSync(dir, { recursive: true }); // the module-level afterEach removes it between tests
+  });
+  afterEach(() => {
+    if (restoreDir === undefined) delete process.env.LUPIN_DIR;
+    else process.env.LUPIN_DIR = restoreDir;
+  });
+
+  async function freePort(): Promise<number> {
+    const probe: ServerType = serve({ fetch: () => new Response('ok'), port: 0, hostname: '127.0.0.1' });
+    await new Promise<void>((resolve) => probe.once('listening', resolve));
+    const addr = probe.address();
+    const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    return port;
+  }
+
+  it('serves the 529 while holding, then yields when a LIVE pid appears in the pidfile', async () => {
+    const port = await freePort();
+    writeFileSync(pidfilePath(), '999999'); // the dead daemon that triggered the hold
+    const hold = holdPortDown(port, 30_000, 50);
+
+    // While held: any request answers the well-formed 529.
+    await new Promise((r) => setTimeout(r, 200));
+    const res = await fetch(`http://127.0.0.1:${String(port)}/v1/messages`, { method: 'POST' });
+    expect(res.status).toBe(529);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toContain('lupin run');
+
+    // A fresh `lupin run` writes its new daemon pid (alive) before binding:
+    // the watchdog must step aside instead of deadlocking it.
+    writeFileSync(pidfilePath(), String(process.pid));
+    const outcome = await hold;
+    expect(outcome).toBe('yielded');
+
+    // The port is actually free again: a new bind must succeed.
+    const rebind: ServerType = serve({ fetch: () => new Response('ok'), port, hostname: '127.0.0.1' });
+    await new Promise<void>((resolve, reject) => {
+      rebind.once('listening', resolve);
+      rebind.once('error', reject);
+    });
+    await new Promise<void>((resolve) => rebind.close(() => resolve()));
+  });
+
+  it('gives up after the deadline when nothing comes back', async () => {
+    const port = await freePort();
+    writeFileSync(pidfilePath(), '999999');
+    const outcome = await holdPortDown(port, 300, 50);
+    expect(outcome).toBe('gave-up');
+  });
+});
+
+describe('fallback responder (live bind)', () => {
+  it('serves a 529 Anthropic error on any path while the daemon is down', async () => {
+    const app = new Hono();
+    app.all('*', () => {
+      const err = networkError(DAEMON_DOWN_MESSAGE);
+      return new Response(JSON.stringify(err.body), {
+        status: err.status,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const server: ServerType = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' });
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+    try {
+      for (const path of ['/v1/messages', '/v1/messages/count_tokens', '/health']) {
+        const res = await fetch(`http://127.0.0.1:${String(port)}${path}`, { method: 'POST' });
+        expect(res.status).toBe(529);
+        const body = (await res.json()) as { type: string; error: { type: string; message: string } };
+        expect(body.type).toBe('error');
+        expect(body.error.type).toBe('overloaded_error');
+        expect(body.error.message).toContain('lupin run');
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+// Packaging (audit §7.2): an npm-installed Lupin has no tsx and no .ts files.
+// The spawn arguments must follow the world the module itself lives in.
+describe('entrypointArgs (dev vs dist spawn)', () => {
+  it('a .ts module spawns its entry through the tsx loader', () => {
+    const args = entrypointArgs('file:///C:/repo/src/server/daemon.ts', './start.ts');
+    expect(args.slice(0, 2)).toEqual(['--import', 'tsx']);
+    expect(args[2]).toMatch(/start\.ts$/);
+  });
+
+  it('a compiled .js module spawns the sibling .js directly, no loader', () => {
+    const args = entrypointArgs('file:///C:/pkg/dist/server/daemon.js', './start.ts');
+    expect(args).toHaveLength(1);
+    expect(args[0]).toMatch(/start\.js$/);
+  });
+
+  it('extra entry args survive the dist rewrite (watchdog port)', () => {
+    const args = [...entrypointArgs('file:///C:/pkg/dist/server/daemon.js', './watchdog.ts'), '4100'];
+    expect(args[0]).toMatch(/watchdog\.js$/);
+    expect(args[1]).toBe('4100');
+  });
+});

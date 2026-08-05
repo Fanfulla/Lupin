@@ -1,0 +1,26 @@
+{
+  "name": "quirks-reasoning",
+  "spec": "SPEC-TRANSLATION §1 + SPEC-PROVIDERS §5 (maxCompletionTokens, noTemperatureOnReasoning)",
+  "direction": "request",
+  "quirks": ["maxCompletionTokens", "noTemperatureOnReasoning"],
+  "input": {
+    "model": "test-model",
+    "max_tokens": 2048,
+    "temperature": 1,
+    "top_p": 0.9,
+    "top_k": 40,
+    "stream": true,
+    "thinking": { "type": "enabled", "budget_tokens": 1000 },
+    "metadata": { "user_id": "u123" },
+    "messages": [{ "role": "user", "content": "Vai." }]
+  },
+  "expected": {
+    "model": "test-model",
+    "messages": [{ "role": "user", "content": "Vai." }],
+    "max_completion_tokens": 2048,
+    "stream": true,
+    "stream_options": { "include_usage": true },
+    "user": "u123",
+    "n": 1
+  }
+}

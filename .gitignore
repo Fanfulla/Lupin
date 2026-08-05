@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+*.log
+
+# Rust TUI sidecar build output
+tui/target/
+
+# npm pack output
+*.tgz
+
+# Local agent settings: machine paths and a personal allow list. Untracked
+# already, but a `git add -A` would have swept them into a public repo.
+.claude/
+

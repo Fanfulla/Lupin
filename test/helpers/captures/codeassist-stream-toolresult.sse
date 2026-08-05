@@ -1,0 +1,4 @@
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": "The weather in Rome is clear"}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-2.5-flash","createTime": "2026-07-29T12:20:13.955147Z","responseId": "_e9paoumOs3MhcIPs6nYiAE"},"traceId": "5ebad45673db9392","metadata": {"remoteContext": {"ragState": "RAG_DISABLED"}}}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": " with a temperature of 31C."}]},"finishReason": "STOP"}],"usageMetadata": {"promptTokenCount": 41,"candidatesTokenCount": 15,"totalTokenCount": 56,"trafficType": "ON_DEMAND","promptTokensDetails": [{"modality": "TEXT","tokenCount": 41}],"candidatesTokensDetails": [{"modality": "TEXT","tokenCount": 15}]},"modelVersion": "gemini-2.5-flash","createTime": "2026-07-29T12:20:13.955147Z","responseId": "_e9paoumOs3MhcIPs6nYiAE"},"traceId": "5ebad45673db9392","metadata": {"remoteContext": {"ragState": "RAG_DISABLED"}}}
+

@@ -1,0 +1,49 @@
+{
+  "name": "tool-mcp-long-name",
+  "spec": "SPEC-TRANSLATION §3, §10 case 2",
+  "direction": "request",
+  "quirks": [],
+  "input": {
+    "model": "test-model",
+    "max_tokens": 1024,
+    "messages": [{ "role": "user", "content": "Usa il tool." }],
+    "tools": [
+      {
+        "name": "mcp__lupin_doctor__echo_test",
+        "description": "Echo di test",
+        "input_schema": { "type": "object", "properties": { "msg": { "type": "string" } }, "required": ["msg"] }
+      },
+      {
+        "name": "mcp__super-long-mcp-server-name-for-testing__and_a_really_long_tool_name_here",
+        "description": "Nome oltre i 64 char",
+        "input_schema": { "type": "object", "properties": {} }
+      }
+    ],
+    "tool_choice": { "type": "tool", "name": "mcp__lupin_doctor__echo_test" }
+  },
+  "expected": {
+    "model": "test-model",
+    "messages": [{ "role": "user", "content": "Usa il tool." }],
+    "max_tokens": 1024,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "mcp__lupin_doctor__echo_test",
+          "description": "Echo di test",
+          "parameters": { "type": "object", "properties": { "msg": { "type": "string" } }, "required": ["msg"] }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "mcp__super-long-mcp-server-name-for-testing__and_3a73ced7",
+          "description": "Nome oltre i 64 char",
+          "parameters": { "type": "object", "properties": {} }
+        }
+      }
+    ],
+    "tool_choice": { "type": "function", "function": { "name": "mcp__lupin_doctor__echo_test" } },
+    "n": 1
+  }
+}

@@ -1,0 +1,125 @@
+{
+  "name": "agentic-history",
+  "spec": "SPEC-TRANSLATION §10 cases 3+4+10: a history of ten or more turns with alternating tool_use and tool_result, several tool calls in one turn, is_error, and content arrays",
+  "direction": "request",
+  "input": {
+    "model": "m1",
+    "max_tokens": 8192,
+    "system": "You are a coding agent.",
+    "messages": [
+      { "role": "user", "content": "Fix the bug in auth.ts" },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "text", "text": "Reading the file." },
+          { "type": "tool_use", "id": "t1", "name": "Read", "input": { "path": "auth.ts" } }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "export function check() {}" }]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "tool_use", "id": "t2", "name": "Edit", "input": { "path": "auth.ts", "old": "<", "new": "<=" } }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [{ "type": "tool_result", "tool_use_id": "t2", "is_error": true, "content": "old string not found" }]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "text", "text": "Retrying with exact match." },
+          { "type": "tool_use", "id": "t3", "name": "Edit", "input": { "path": "auth.ts", "old": "a < b", "new": "a <= b" } }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "t3",
+            "content": [
+              { "type": "text", "text": "ok" },
+              { "type": "text", "text": "1 replacement" }
+            ]
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "tool_use", "id": "t4", "name": "Bash", "input": { "cmd": "npm test" } },
+          { "type": "tool_use", "id": "t5", "name": "Read", "input": { "path": "auth.test.ts" } }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          { "type": "tool_result", "tool_use_id": "t4", "content": "42 passing" },
+          { "type": "tool_result", "tool_use_id": "t5", "content": "test file content" },
+          { "type": "text", "text": "looks good?" }
+        ]
+      },
+      { "role": "assistant", "content": [{ "type": "text", "text": "All tests pass." }] },
+      { "role": "user", "content": "great, done" }
+    ]
+  },
+  "expected": {
+    "model": "m1",
+    "max_tokens": 8192,
+    "n": 1,
+    "messages": [
+      { "role": "system", "content": "You are a coding agent." },
+      { "role": "user", "content": "Fix the bug in auth.ts" },
+      {
+        "role": "assistant",
+        "content": "Reading the file.",
+        "tool_calls": [
+          { "id": "t1", "type": "function", "function": { "name": "Read", "arguments": "{\"path\":\"auth.ts\"}" } }
+        ]
+      },
+      { "role": "tool", "tool_call_id": "t1", "content": "export function check() {}" },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "t2",
+            "type": "function",
+            "function": { "name": "Edit", "arguments": "{\"path\":\"auth.ts\",\"old\":\"<\",\"new\":\"<=\"}" }
+          }
+        ]
+      },
+      { "role": "tool", "tool_call_id": "t2", "content": "Error: old string not found" },
+      {
+        "role": "assistant",
+        "content": "Retrying with exact match.",
+        "tool_calls": [
+          {
+            "id": "t3",
+            "type": "function",
+            "function": { "name": "Edit", "arguments": "{\"path\":\"auth.ts\",\"old\":\"a < b\",\"new\":\"a <= b\"}" }
+          }
+        ]
+      },
+      { "role": "tool", "tool_call_id": "t3", "content": "ok\n1 replacement" },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          { "id": "t4", "type": "function", "function": { "name": "Bash", "arguments": "{\"cmd\":\"npm test\"}" } },
+          { "id": "t5", "type": "function", "function": { "name": "Read", "arguments": "{\"path\":\"auth.test.ts\"}" } }
+        ]
+      },
+      { "role": "tool", "tool_call_id": "t4", "content": "42 passing" },
+      { "role": "tool", "tool_call_id": "t5", "content": "test file content" },
+      { "role": "user", "content": "looks good?" },
+      { "role": "assistant", "content": "All tests pass." },
+      { "role": "user", "content": "great, done" }
+    ]
+  }
+}

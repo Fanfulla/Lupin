@@ -1,0 +1,48 @@
+{
+  "name": "simple-text",
+  "spec": "SPEC-TRANSLATION §4, §10 case 1. Recorded from OpenRouter/mistral-nemo 2026-07-18 (test/helpers/captures/or-simple.json)",
+  "direction": "response",
+  "quirks": [],
+  "input": {
+    "id": "gen-1784385405-Omp0nUGlKiEw8JzBpTYJ",
+    "object": "chat.completion",
+    "created": 1784385405,
+    "model": "mistralai/mistral-nemo",
+    "provider": "DeepInfra",
+    "system_fingerprint": null,
+    "service_tier": null,
+    "choices": [
+      {
+        "index": 0,
+        "logprobs": null,
+        "finish_reason": "stop",
+        "native_finish_reason": "stop",
+        "message": { "role": "assistant", "content": "ok", "refusal": null, "reasoning": null }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 11,
+      "completion_tokens": 1,
+      "total_tokens": 12,
+      "cost": 2.39e-7,
+      "is_byok": false,
+      "prompt_tokens_details": { "cached_tokens": 0, "cache_write_tokens": 0, "audio_tokens": 0, "video_tokens": 0 },
+      "cost_details": {
+        "upstream_inference_cost": 2.39e-7,
+        "upstream_inference_prompt_cost": 2.09e-7,
+        "upstream_inference_completions_cost": 3e-8
+      },
+      "completion_tokens_details": { "reasoning_tokens": 0, "image_tokens": 0, "audio_tokens": 0 }
+    }
+  },
+  "expected": {
+    "id": "msg_gen-1784385405-Omp0nUGlKiEw8JzBpTYJ",
+    "type": "message",
+    "role": "assistant",
+    "model": "mistralai/mistral-nemo",
+    "content": [{ "type": "text", "text": "ok" }],
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "usage": { "input_tokens": 11, "output_tokens": 1 }
+  }
+}

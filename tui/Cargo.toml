@@ -1,0 +1,24 @@
+[package]
+name = "lupin-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Optional terminal hub for the Lupin proxy (DESIGN-OAUTH-PKCE-TUI)"
+license = "Apache-2.0"
+
+# The TUI is an OPTIONAL add-on: the core proxy is pure Node with zero native
+# dependencies (ARCHITECTURE.md). This crate never ships inside the npm
+# package's runtime; the user builds it with cargo and `lupin` finds it on the
+# PATH. rustls only, no OpenSSL: a native TLS stack would defeat the point.
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,45 @@
+{
+  "name": "stream-cached-tokens",
+  "spec": "SPEC-TRANSLATION §5 + §4 (backlog #11b, 2026-07-24): the final usage chunk (stream_options.include_usage, empty choices) carries prompt_tokens_details.cached_tokens; the message_delta reports cache_read_input_tokens and input_tokens net of the cache.",
+  "direction": "stream",
+  "quirks": [],
+  "input": [
+    "data: {\"id\":\"chatcmpl-20260724scache\",\"object\":\"chat.completion.chunk\",\"created\":1785000000,\"model\":\"glm-5\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\",\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-20260724scache\",\"object\":\"chat.completion.chunk\",\"created\":1785000000,\"model\":\"glm-5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    "data: {\"id\":\"chatcmpl-20260724scache\",\"object\":\"chat.completion.chunk\",\"created\":1785000000,\"model\":\"glm-5\",\"choices\":[],\"usage\":{\"prompt_tokens\":30000,\"completion_tokens\":12,\"total_tokens\":30012,\"prompt_tokens_details\":{\"cached_tokens\":28000}}}\n\n",
+    "data: [DONE]\n\n"
+  ],
+  "expected": [
+    {
+      "event": "message_start",
+      "data": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_chatcmpl-20260724scache",
+          "type": "message",
+          "role": "assistant",
+          "model": "glm-5",
+          "content": [],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "usage": { "input_tokens": 0, "output_tokens": 0 }
+        }
+      }
+    },
+    {
+      "event": "content_block_start",
+      "data": { "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }
+    },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "ok" } } },
+    { "event": "content_block_stop", "data": { "type": "content_block_stop", "index": 0 } },
+    {
+      "event": "message_delta",
+      "data": {
+        "type": "message_delta",
+        "delta": { "stop_reason": "end_turn", "stop_sequence": null },
+        "usage": { "input_tokens": 2000, "output_tokens": 12, "cache_read_input_tokens": 28000 }
+      }
+    },
+    { "event": "message_stop", "data": { "type": "message_stop" } }
+  ]
+}

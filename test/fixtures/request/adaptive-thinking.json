@@ -1,0 +1,21 @@
+{
+  "name": "adaptive-thinking",
+  "spec": "SPEC-TRANSLATION §1 (backlog #12, 2026-07-24): thinking {type:\"adaptive\"}, which Claude Code sent from Sonnet 5 on EVERY unrecognised alias, is dropped in v1 like every other form of thinking. Pins the behaviour: no 400, and no thinking or reasoning field on the way out.",
+  "direction": "request",
+  "quirks": [],
+  "input": {
+    "model": "lupin-alias",
+    "max_tokens": 4096,
+    "stream": true,
+    "thinking": { "type": "adaptive" },
+    "messages": [{ "role": "user", "content": "Vai." }]
+  },
+  "expected": {
+    "model": "lupin-alias",
+    "messages": [{ "role": "user", "content": "Vai." }],
+    "max_tokens": 4096,
+    "stream": true,
+    "stream_options": { "include_usage": true },
+    "n": 1
+  }
+}

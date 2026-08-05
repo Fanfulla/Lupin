@@ -1,0 +1,22 @@
+{
+  "note": "LM Studio 0.3.x, gemma-4-12b-qat loaded at 8192 ctx, real capture 2026-07-19. Claude Code's harness sent 46075 tokens. The engine's real error is a permanent 400, but LM Studio wraps it in an HTTP 500 and, on the streaming route, in an SSE error event under HTTP 200.",
+  "nonStream": {
+    "httpStatus": 500,
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Engine protocol predict request returned 400: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (46075 tokens) exceeds the available context size (8192 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":46075,\\\"n_ctx\\\":8192}}\"}}"
+  },
+  "stream": {
+    "httpStatus": 200,
+    "contentType": "text/event-stream",
+    "body": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Engine protocol predict request returned 400: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (46075 tokens) exceeds the available context size (8192 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":46075,\\\"n_ctx\\\":8192}}\"}}\n\n"
+  },
+  "claudeCodeResult": {
+    "note": "What Claude Code returns to `--output-format json` when every request failed. subtype is 'success' even though nothing ran: is_error and terminal_reason carry the truth.",
+    "type": "result",
+    "subtype": "success",
+    "is_error": true,
+    "num_turns": 1,
+    "terminal_reason": "api_error",
+    "result": "API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary.",
+    "total_cost_usd": 0
+  }
+}

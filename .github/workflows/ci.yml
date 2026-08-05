@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Two operating systems on purpose. Development happens on Windows and CI ran
+  # only on Linux, so a whole class of bug reached main green: `basename`
+  # follows the HOST, and on Linux it does not cut a Windows path at all, which
+  # broke `lupin run`'s Claude Code detection and went unnoticed for three
+  # commits (2026-07-29). The repo already has other platform-specific code
+  # (the `.cmd` shims that need `shell: true` only on win32), so this is a
+  # class worth catching rather than a one-off.
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # a failure on one OS must not hide the other's result
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  # The TUI is an OPTIONAL Rust sidecar that never enters the npm runtime, and
+  # for that reason nothing here compiled it: a change could break the build
+  # and no one would know until a user ran cargo. It has unit tests now (config
+  # precedence, the log tail, and the screen drawn into a TestBackend buffer),
+  # so this job is what keeps them honest.
+  tui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui
+      - run: cargo clippy --manifest-path tui/Cargo.toml -- -D warnings
+      - run: cargo test --manifest-path tui/Cargo.toml
+      # `cargo fmt --check` is deliberately NOT here: the existing sources
+      # predate any formatting gate, so turning it on would reformat code this
+      # change never touched (CLAUDE.md rule 3). Worth doing as its own commit,
+      # not as a side effect of adding tests.

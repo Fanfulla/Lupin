@@ -1,0 +1,99 @@
+# Changelog
+
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
+[semantic versioning](https://semver.org/spec/v2.0.0.html).
+
+Entries record what a user can observe. The full engineering record, with the
+evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
+
+## [0.1.1]
+
+### Fixed
+
+- **OAuth subscriptions were unusable on Windows whenever the OS keychain was
+  the active backend.** The credential store chunks long values to stay under
+  Windows Credential Manager's blob limit, but it sized the chunks in UTF-8
+  bytes while the platform stores the value as UTF-16 and counts those. Measured
+  against the live backend: 1280 characters write and read back, 1281 throws. So
+  a 1393-character Kimi token measured "under the limit", took the unchunked
+  path, and threw at 2786 UTF-16 bytes; the request came back as
+  `401 [lupin] Value of 'password encoded as UTF-16' is longer than the platform
+  limit of 2560 chars`. Every test passed throughout, because the in-memory fake
+  keyring accepted any length. It now enforces the measured limit.
+- The TUI announced **"daemon up" while the daemon was down**. When it dies, the
+  watchdog re-binds the port and answers 529 to every path, and that body parsed
+  into an empty `Health` because no field of it is required. The dashboard now
+  checks the status before parsing, so a watchdog reads as DOWN.
+- TUI secondary text (panel titles, timestamps, the whole key legend) was
+  `DarkGray`, which is ANSI bright-black and invisible against most dark
+  terminal themes.
+
+## [0.1.0]
+
+### Added
+
+- **GitHub Copilot** as a provider (`lupin login copilot --i-accept-the-risk`),
+  through the RFC 8628 device flow and a second token bought at exchange time.
+  Verified end to end on a Copilot Free plan, up to a real tool call.
+- **Profile switching from inside Claude Code**: the `/model` picker lists
+  `switch Lupin profile: <name>` rows, and picking one moves the active profile
+  without leaving the session. Verified on Claude Code 2.1.222.
+- **`identityHint`**, an opt-in quirk that makes the model name the model and
+  provider that really answer. Measured against the real harness prompt: with
+  the quirk the answer is the truth, without it the model claims to be Claude.
+- **Several accounts per provider**: `lupin login <provider> --account <label>`.
+  Not available for Copilot, deliberately.
+- A cache-bust detector that reads the provider's own token counters, so it
+  diagnoses a broken prompt prefix while holding no prompt bytes at all.
+
+### Fixed
+
+- **The OAuth device flow now asks for JSON.** GitHub's endpoints answer
+  form-urlencoded unless told otherwise, which made `lupin login copilot` fail
+  outright, and would have made a successful browser authorization poll for the
+  full fifteen minutes before reporting an expired code.
+- **The Kimi device identity headers no longer reach other providers.** They are
+  opt-in per descriptor now, the way they were already kept away from the PKCE
+  flows.
+- The identity hint is no longer appended twice when a request fails over to a
+  second profile, which used to tell the model two different things about itself
+  in one prompt.
+- A refused Copilot bearer is no longer retried unchanged.
+- **`lupin use` no longer ignores the flags it does not know.** It now takes
+  `--opus`, `--sonnet` and `--haiku` to aim a profile's slots, which `lupin
+  login` had been suggesting before they existed, and refuses an unknown option
+  instead of reporting success and doing nothing.
+- `lupin login` prints the account's catalogue, not just how many models it
+  found, and leaves embedding models out of the slots they could never serve.
+
+### Known limitations
+
+- **A Copilot account's `/models` list is not the set of models that account can
+  use**: on a free plan, 51 were listed and 5 answered, and the field that looks
+  like it would tell you (`supported_endpoints`) points the wrong way. Slots
+  still start on the first model listed, which may well be one of the 46. The
+  catalogue is printed at login and `lupin use --opus <model>` aims the slots,
+  so the way out is one command, but nothing probes the models for you yet.
+- No doctor score for Copilot: a full run would spend most of a free plan's
+  monthly allowance in one go.
+
+## [0.1.0-rc.1]
+
+The release candidate that preceded 0.1.0. What works, verified with a real headless Claude
+Code session scored on disk artefacts (`lupin doctor`):
+
+- **Four lanes**: `passthrough` (providers that already speak Anthropic),
+  `translate` (OpenAI-compatible), `responses` (the ChatGPT subscription over
+  WHAM), `codeassist` (the Gemini Code Assist subscription).
+- **Subscriptions**: Kimi Code 10/10, ChatGPT 10/10, Gemini Code Assist 8/10 on
+  a free tier.
+- **Local runtimes with no key at all**: Ollama, LM Studio, llama.cpp,
+  ds4-server, with the real context window read from the running server.
+- **Dialect normalization** for eight model families, verified against the
+  official chat templates rather than guessed.
+- **CLI**: `init`, `login`, `use`, `go`, `run`, `resume`, `doctor`, `list`,
+  `status`, `logs`, `top`, `usage`, plus an optional Rust TUI dashboard.
+- **Routing**: content-aware routes with a threshold derived from the window of
+  the model really serving, tier-equivalent failover, and a quota-aware durable
+  switch.

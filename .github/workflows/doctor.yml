@@ -1,0 +1,81 @@
+# Weekly canary (ROADMAP risk 1): Claude Code ships often, and a release that
+# changes the protocol or the env would break this proxy silently. Running the
+# real agentic doctor against the latest Claude Code is what turns that from a
+# user bug report into a CI failure.
+name: doctor
+
+on:
+  schedule:
+    # Mondays 05:00 UTC: after the weekend, before the week's work.
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Profile to score
+        required: false
+        default: kimi
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    # Must exceed the doctor's own session budget (3x the 600s provider
+    # ceiling), or CI kills the run before it can report a verdict.
+    timeout-minutes: 45
+    env:
+      PROFILE: ${{ github.event.inputs.profile || 'kimi' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # A fork or an unconfigured repo has no key. That is not a failure, and
+      # pretending otherwise trains people to ignore this job.
+      - name: Check credentials
+        id: creds
+        env:
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+        run: |
+          if [ -z "$MOONSHOT_API_KEY" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No MOONSHOT_API_KEY secret: skipping the live doctor run."
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Claude Code
+        if: steps.creds.outputs.available == 'true'
+        run: npm install -g @anthropic-ai/claude-code
+
+      # The version under test is the point of the canary: when this job starts
+      # failing, the first question is which release changed.
+      - name: Record the Claude Code version under test
+        if: steps.creds.outputs.available == 'true'
+        run: claude --version
+
+      # Built from the same DEFAULT_PROFILES the wizard uses, so CI cannot
+      # score a setup that differs from what a user gets. A script rather than
+      # an inline eval: `lupin init` refuses a non-TTY stdin by design, and
+      # `tsx -e` does not take ESM imports.
+      - name: Write a throwaway config
+        if: steps.creds.outputs.available == 'true'
+        env:
+          LUPIN_CI_PROFILE: ${{ env.PROFILE }}
+        run: npx tsx scripts/ci-config.ts
+
+      - name: Run the doctor
+        if: steps.creds.outputs.available == 'true'
+        env:
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+        run: npx tsx src/cli.ts doctor "$PROFILE" --json | tee doctor.json
+
+      # always(): a failing score is exactly when the report is worth reading.
+      - name: Publish the report
+        if: always() && steps.creds.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: doctor-report
+          path: doctor.json
+          if-no-files-found: warn

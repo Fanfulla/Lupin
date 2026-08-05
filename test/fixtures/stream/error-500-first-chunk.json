@@ -1,0 +1,12 @@
+{
+  "name": "error-500-first-chunk",
+  "spec": "SPEC-TRANSLATION §10 case 8: a 500 as the FIRST frame of the stream, so only an error event carrying overloaded_error, and no message_start",
+  "direction": "stream",
+  "input": ["data: {\"error\":{\"message\":\"internal error\",\"code\":500}}\n\n"],
+  "expected": [
+    {
+      "event": "error",
+      "data": { "type": "error", "error": { "type": "overloaded_error", "message": "internal error" } }
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+# Lupin
+
+> A local proxy that runs Claude Code on any third-party LLM provider. Claude Code speaks only the Anthropic Messages API; Lupin receives it on 127.0.0.1 and forwards it to the provider you chose, so your MCP servers, skills, CLAUDE.md, hooks, memories and plugins keep working while the model underneath changes. Install with `npm i -g lupin-code`, or try it with `npx lupin-code@latest init`.
+
+What separates it from the other routers is not translation, which everyone does, but `lupin doctor`: a real headless Claude Code session run against a dedicated server on an ephemeral port and scored from artefacts on disk (files really edited, scripts that really run), never from what the model claims it did. Measured scores, all dated: Kimi Code subscription 10/10, ChatGPT subscription 10/10, Gemini Code Assist 8/10 on a free tier, LM Studio with gemma-4-12b 0/10 (the harness needs about 46,000 tokens of prompt before the first word, and that GPU cannot hold it).
+
+Four request lanes: `passthrough` for providers that already speak Anthropic (Kimi/Moonshot, DeepSeek, Z.AI/GLM, Ollama, LM Studio, ds4-server), where nothing is translated at all; `translate` for OpenAI-compatible endpoints (OpenAI, Gemini, OpenRouter, llama.cpp, GitHub Copilot); `responses` for the ChatGPT subscription over WHAM; `codeassist` for the Gemini Code Assist subscription. The last two exist because those OAuth tokens do not spend on the providers' public APIs at all.
+
+Anthropic and the Claude models are deliberately out of scope: Claude Code already runs them natively. Lupin exists to reach the models it cannot.
+
+Conventions worth knowing when reading this repository: every behaviour of the translation core is born from a fixture recorded from real provider output, never invented; provider deviations are flags in one quirk registry rather than conditionals scattered through the code; model names live only in dated default profiles and in the provider spec, never hardcoded in sources; the proxy never persists prompts or responses, and credentials live in the OS keychain or a 600 file. Documentation is written in English with no em-dashes, and every claim that carries a number carries the date it was measured.
+
+## Documentation
+
+- [README](https://raw.githubusercontent.com/Fanfulla/Lupin/main/README.md): what it is, the sixty-second quickstart, the provider table with what has been verified live per provider, and an FAQ
+- [CHANGELOG](https://raw.githubusercontent.com/Fanfulla/Lupin/main/CHANGELOG.md): released versions, and the known limitations stated rather than omitted
+- [SECURITY](https://raw.githubusercontent.com/Fanfulla/Lupin/main/SECURITY.md): the properties worth breaking (credentials never reach the config, the logs or a crash report), how to report, and which two risks are deliberate
+- [NEXT-STEPS](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/NEXT-STEPS.md): the cold-start handoff. Current state, the commands that verify it, and the traps that cost time to learn
+- [DECISIONS](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/DECISIONS.md): the ADR log. Every decision with its reasoning and the alternatives that were rejected and why
+- [ROADMAP](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/ROADMAP.md): milestones with their verification criteria, and a session-by-session record of what was proven live and how
+
+## Specifications
+
+- [SPEC-TRANSLATION](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/SPEC-TRANSLATION.md): field mapping, content blocks, tools, the SSE state machine, errors, count_tokens, dialect normalization for eight model families verified against the official chat templates, and ten acceptance fixtures
+- [SPEC-PROVIDERS](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/SPEC-PROVIDERS.md): the provider registry with verified endpoints and verification dates, the profile and slot schema, routing, failover, and the quirk registry
+- [SPEC-CLI](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/SPEC-CLI.md): every command, the doctor's six checks and scoring rules, security, and the UX acceptance criteria
+- [ARCHITECTURE](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/ARCHITECTURE.md): repository layout, dependency rules that keep the translation core pure, and the request flow
+- [TESTING](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/TESTING.md): fixture format, how captures are recorded from real provider output, test levels, and the fake provider
+
+## Optional
+
+- [DESIGN](https://raw.githubusercontent.com/Fanfulla/Lupin/main/DESIGN.md): vision, prior art, and positioning against other routers
+- [TUI](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/TUI.md): the optional Rust terminal dashboard, its panels and keys
+- [COMPETITIVE](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/COMPETITIVE.md): analysis of competing routers, including the issue sample where over 29% of the bugs are content-level dialect failures
+- [DESIGN-TRANSLATORS-DEDICATED](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/DESIGN-TRANSLATORS-DEDICATED.md): how the two subscription protocols were reverse-engineered from real captures
+- [DESIGN-OAUTH](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/DESIGN-OAUTH.md): the pluggable credential source and the device flow
+- [DESIGN-HANDOFF](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/DESIGN-HANDOFF.md): continuing a session that hit its limits on another provider

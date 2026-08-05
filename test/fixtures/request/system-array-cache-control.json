@@ -1,0 +1,24 @@
+{
+  "name": "system-array-cache-control",
+  "spec": "SPEC-TRANSLATION §1, §10 case 6",
+  "direction": "request",
+  "quirks": [],
+  "input": {
+    "model": "test-model",
+    "max_tokens": 512,
+    "system": [
+      { "type": "text", "text": "Parte A.", "cache_control": { "type": "ephemeral" } },
+      { "type": "text", "text": "Parte B." }
+    ],
+    "messages": [{ "role": "user", "content": "Vai." }]
+  },
+  "expected": {
+    "model": "test-model",
+    "messages": [
+      { "role": "system", "content": "Parte A.\n\nParte B." },
+      { "role": "user", "content": "Vai." }
+    ],
+    "max_tokens": 512,
+    "n": 1
+  }
+}

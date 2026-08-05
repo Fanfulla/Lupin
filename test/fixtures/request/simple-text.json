@@ -1,0 +1,23 @@
+{
+  "name": "simple-text",
+  "spec": "SPEC-TRANSLATION §1",
+  "direction": "request",
+  "quirks": [],
+  "input": {
+    "model": "test-model",
+    "max_tokens": 1024,
+    "system": "Sei un assistente.",
+    "temperature": 0.7,
+    "messages": [{ "role": "user", "content": "Ciao!" }]
+  },
+  "expected": {
+    "model": "test-model",
+    "messages": [
+      { "role": "system", "content": "Sei un assistente." },
+      { "role": "user", "content": "Ciao!" }
+    ],
+    "max_tokens": 1024,
+    "temperature": 0.7,
+    "n": 1
+  }
+}

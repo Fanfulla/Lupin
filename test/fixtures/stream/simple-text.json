@@ -1,0 +1,89 @@
+{
+  "name": "stream-simple-text",
+  "spec": "SPEC-TRANSLATION §5, §10 case 1. Recorded from OpenRouter/mistral-nemo 2026-07-18 (test/helpers/captures/or-stream-simple.json). Real cases included: SSE keep-alive comments, two frames fused into one chunk, a repeated finish_reason, and usage arriving after it",
+  "direction": "stream",
+  "quirks": [],
+  "input": [
+    ": OPENROUTER PROCESSING\n\n",
+    ": OPENROUTER PROCESSING\n\n",
+    ": OPENROUTER PROCESSING\n\n",
+    ": OPENROUTER PROCESSING\n\n",
+    ": OPENROUTER PROCESSING\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"1\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\".\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" Uno\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"2\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\".\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" Due\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"3\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\".\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" Tre\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"4\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\".\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" Qu\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"attro\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"5\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\".\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" Cin\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"que\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}]}\n\n",
+    "data: {\"id\":\"gen-1784385459-vqPbfPBriHQB6dLUR8vS\",\"object\":\"chat.completion.chunk\",\"created\":1784385459,\"model\":\"mistralai/mistral-nemo\",\"provider\":\"DeepInfra\",\"service_tier\":null,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":22,\"completion_tokens\":21,\"total_tokens\":43,\"cost\":0.000001048,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.000001048,\"upstream_inference_prompt_cost\":4.18e-7,\"upstream_inference_completions_cost\":6.3e-7},\"completion_tokens_details\":{\"reasoning_tokens\":0,\"image_tokens\":0,\"audio_tokens\":0}}}\n\n",
+    "data: [DONE]\n\n"
+  ],
+  "expected": [
+    {
+      "event": "message_start",
+      "data": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_gen-1784385459-vqPbfPBriHQB6dLUR8vS",
+          "type": "message",
+          "role": "assistant",
+          "model": "mistralai/mistral-nemo",
+          "content": [],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "usage": { "input_tokens": 0, "output_tokens": 0 }
+        }
+      }
+    },
+    {
+      "event": "content_block_start",
+      "data": { "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }
+    },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "1" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "." } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": " Uno" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "\n" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "2" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "." } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": " Due" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "\n" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "3" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "." } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": " Tre" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "\n" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "4" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "." } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": " Qu" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "attro" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "\n" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "5" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "." } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": " Cin" } } },
+    { "event": "content_block_delta", "data": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "que" } } },
+    { "event": "content_block_stop", "data": { "type": "content_block_stop", "index": 0 } },
+    {
+      "event": "message_delta",
+      "data": {
+        "type": "message_delta",
+        "delta": { "stop_reason": "end_turn", "stop_sequence": null },
+        "usage": { "input_tokens": 22, "output_tokens": 21 }
+      }
+    },
+    { "event": "message_stop", "data": { "type": "message_stop" } }
+  ]
+}
