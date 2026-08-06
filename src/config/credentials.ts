@@ -213,8 +213,14 @@ function removeFileKey(ref: string): void {
  * cost the only copy. Steady state: zero secrets on disk.
  */
 function promote(store: KeychainStore, ref: string, value: string): void {
-  store.set(ref, value);
-  if (store.get(ref) === value) removeFileKey(ref);
+  try {
+    store.set(ref, value);
+    if (store.get(ref) === value) removeFileKey(ref);
+  } catch {
+    // Promotion is opportunistic: a backend that refuses the value (seen live
+    // 2026-08-05, Windows blob limit) must not break the read that already
+    // holds it. The file copy stays, and the next read tries again.
+  }
 }
 
 /** kimi-cli strategy: refresh when remaining < max(5 min, half the token lifetime). */

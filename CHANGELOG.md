@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- **A keychain that refuses a value no longer breaks the read that already has
+  it.** Lazy promotion moves a secret from the 600 file into the OS keychain on
+  first read; when the backend threw (the Windows blob-limit shape seen on
+  2026-08-05), the exception propagated and turned a servable read into a
+  failure. Promotion now swallows the backend error, serves the file value, and
+  leaves the file copy in place for the next attempt.
+
 ## [0.1.1]
 
 ### Known limitations

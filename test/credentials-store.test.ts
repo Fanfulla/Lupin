@@ -231,6 +231,44 @@ describe('lazy promotion from file to keychain', () => {
     expect(readFileSync(credentialsPath(), 'utf8')).toContain('sk-old'); // NOT deleted
   });
 
+  it('a keychain write that throws mid-promotion still serves the file value', () => {
+    process.env.LUPIN_CREDSTORE = 'file';
+    configureCredentialStore();
+    setCredential('moonshot', 'sk-old');
+    setOAuthTokens('kimi', tokens());
+    delete process.env.LUPIN_CREDSTORE;
+    // A keyring that accepts the probe, then THROWS on every later write:
+    // the Windows Credential Manager shape when it refuses a value. Seen
+    // live on 2026-08-05 as a 401 on every request of a kimi-sub session.
+    const mod = fakeKeyring();
+    const throwing: typeof mod = {
+      Entry: class {
+        private readonly inner: InstanceType<typeof mod.Entry>;
+        constructor(service: string, name: string) {
+          this.inner = new mod.Entry(service, name);
+        }
+        getPassword(): string | null {
+          return this.inner.getPassword();
+        }
+        setPassword(p: string): void {
+          if (!p.startsWith('probe')) {
+            throw new Error("Value of 'password encoded as UTF-16' is longer than the platform limit of 2560 chars");
+          }
+          this.inner.setPassword(p);
+        }
+        deletePassword(): boolean {
+          return this.inner.deletePassword();
+        }
+      },
+      raw: mod.raw,
+    };
+    configureCredentialStore({ keyring: throwing });
+
+    expect(getCredential('moonshot')).toBe('sk-old'); // the read must not throw
+    expect(getOAuthTokens('kimi')).toEqual(tokens()); // oauth path identical
+    expect(readFileSync(credentialsPath(), 'utf8')).toContain('sk-old'); // NOT deleted
+  });
+
   it('a corrupt file entry is not promoted and not destroyed', () => {
     writeFileSync(credentialsPath(), JSON.stringify({ 'oauth/kimi': { not: 'tokens' } }));
     configureCredentialStore({ keyring: fakeKeyring() });
