@@ -249,8 +249,16 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
                 }
               },
               (usage) => logExtra({ usage, ...(observeCacheUsage(profileName, usage) === true ? { cacheBust: true } : {}) }),
-              (sawError) => {
-                if (!sawError) health.recordSuccess(prof);
+              (sawError, sawTerminal) => {
+                if (sawError) return;
+                // §9.1: a stream that just stops, with no message_stop and no
+                // stop_reason, is a truncated answer wearing a 200. It must not
+                // credit the provider with the success that clears its cooldown.
+                if (!sawTerminal) {
+                  logExtra({ streamError: 'truncated' });
+                  return;
+                }
+                health.recordSuccess(prof);
               },
             ),
           )
@@ -684,11 +692,14 @@ function mergeUsage(into: UsageLine, raw: unknown): boolean {
 function watchSse(
   onError: (detail: string) => void,
   onUsage: (usage: UsageLine) => void,
-  onEnd?: (sawError: boolean) => void,
+  onEnd?: (sawError: boolean, sawTerminal: boolean) => void,
 ): TransformStream<Uint8Array<ArrayBuffer>, Uint8Array<ArrayBuffer>> {
   const decoder = new TextDecoder();
   let pending = '';
   let fired = false;
+  /** message_stop, or the message_delta that carries the stop_reason: without
+   *  either, the body stopped mid answer (§9.1, issue #1). */
+  let sawTerminal = false;
   // Separate buffer: the error scan truncates its tail aggressively, which
   // would shred the data lines the usage scan has to read whole.
   let lines = '';
@@ -725,12 +736,20 @@ function watchSse(
         if (nl === -1) break;
         const line = lines.slice(0, nl);
         lines = lines.slice(nl + 1);
-        if (!line.startsWith('data:') || !line.includes('"usage"')) continue;
+        if (!line.startsWith('data:')) continue;
+        if (line.includes('"type":"message_stop"')) sawTerminal = true;
+        if (!line.includes('"usage"')) continue;
         try {
           const ev = JSON.parse(line.slice(line.indexOf(':') + 1)) as Record<string, unknown>;
           const msg = ev['message'];
           const raw = ev['type'] === 'message_start' && msg !== undefined ? (msg as Record<string, unknown>)['usage'] : ev['usage'];
           if (mergeUsage(usage, raw)) sawUsage = true;
+          // The stop_reason lands here: a body cut between message_delta and
+          // message_stop still delivered a complete answer.
+          const delta = ev['delta'];
+          if (ev['type'] === 'message_delta' && delta !== null && typeof delta === 'object') {
+            if ((delta as Record<string, unknown>)['stop_reason'] != null) sawTerminal = true;
+          }
         } catch {
           // A data line we cannot parse is not worth failing a request over.
         }
@@ -740,7 +759,7 @@ function watchSse(
     },
     flush() {
       if (sawUsage) onUsage(usage);
-      onEnd?.(fired);
+      onEnd?.(fired, sawTerminal);
     },
   });
 }

@@ -165,6 +165,34 @@ describe('failover cooldown end to end (§4sexies)', () => {
     expect(primary.requests.length).toBe(hitsDuringRamp);
   });
 
+  // Issue #1: a stream that stops mid answer is not a success either. Crediting
+  // one clears the failure counter of a provider that is dying on every request,
+  // which is exactly how it stays out of cooldown forever.
+  it('a truncated stream does not clear the failure counter', async () => {
+    const fail = { kind: 'json' as const, body: { error: { message: 'busy' } }, status: 500 };
+    const truncated = {
+      kind: 'sse' as const,
+      chunks: ['event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":3}}}\n\n'],
+    };
+    primary.respondOnce(fail);
+    primary.respondOnce(fail);
+    primary.respondOnce(truncated); // 200, but half an answer: no credit
+    primary.respondOnce(fail); // third failure in a row: cooldown
+    primary.respondWith({ kind: 'json', body: { id: 'msg_p', type: 'message', role: 'assistant', content: [] } });
+    backup.respondWith({ kind: 'json', body: { id: 'msg_b', type: 'message', role: 'assistant', content: [] } });
+    const app = createApp(twoProfileConfig(primary.url, backup.url), { logger: noopLogger });
+
+    for (let i = 0; i < 4; i++) {
+      const res = await post(app);
+      await res.text(); // the tap only reports once the body is drained
+    }
+    expect(primary.requests.length).toBe(4);
+
+    const res = await post(app);
+    await res.text();
+    expect(primary.requests.length).toBe(4); // in cooldown: the primary is skipped
+  });
+
   it('a clean SSE stream still counts as success and clears the counter', async () => {
     primary.respondWith({
       kind: 'sse',

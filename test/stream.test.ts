@@ -13,12 +13,11 @@ describe('OpenAIStreamTranslator edge cases', () => {
     expect(t.finish()).toHaveLength(0);
   });
 
-  it('stream dies before any chunk → still a protocol-valid sequence with message_start first', () => {
+  it('stream dies before any chunk → one error event, never an empty clean turn', () => {
     const t = new OpenAIStreamTranslator({ requestedModel: 'claude-sonnet-5' });
     const events = t.finish();
-    expect(events.map((e) => e.event)).toEqual(['message_start', 'message_delta', 'message_stop']);
-    const start = events[0]?.data as { message: { model: string } };
-    expect(start.message.model).toBe('claude-sonnet-5');
+    expect(events.map((e) => e.event)).toEqual(['error']);
+    expect(t.finish()).toHaveLength(0);
   });
 
   it('[DONE] as the only frame → message_start still precedes the closing events', () => {
@@ -36,12 +35,24 @@ describe('OpenAIStreamTranslator edge cases', () => {
     expect(t.finish()).toHaveLength(0);
   });
 
-  it('stream truncated without [DONE] → finish() still closes the message', () => {
+  // §5 punto 5: half an answer must never reach Claude Code labelled end_turn.
+  it('stream cut with no finish_reason and no [DONE] → error, not a manufactured end_turn', () => {
     const t = new OpenAIStreamTranslator();
     t.push('data: {"id":"x","model":"m","choices":[{"index":0,"delta":{"content":"met"}}]}\n\n');
     const closing = t.finish();
-    const types = closing.map((e) => e.event);
-    expect(types).toEqual(['content_block_stop', 'message_delta', 'message_stop']);
+    expect(closing.map((e) => e.event)).toEqual(['error']);
+    expect((closing[0]?.data as { error: { message: string } }).error.message).toContain('terminal event');
+    expect(closing.some((e) => e.event === 'message_stop')).toBe(false);
+  });
+
+  it('finish_reason seen but [DONE] never arrives → still a clean close (trap h)', () => {
+    const t = new OpenAIStreamTranslator();
+    t.push('data: {"id":"x","model":"m","choices":[{"index":0,"delta":{"content":"met"}}]}\n\n');
+    t.push('data: {"id":"x","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n');
+    const closing = t.finish();
+    expect(closing.map((e) => e.event)).toEqual(['message_delta', 'message_stop']);
+    const delta = closing[0]?.data as { delta: { stop_reason: string } };
+    expect(delta.delta.stop_reason).toBe('end_turn');
   });
 
   it('SSE frame split across two transport chunks is reassembled', () => {

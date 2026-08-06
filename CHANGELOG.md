@@ -7,6 +7,21 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- **A truncated stream is no longer reported as a finished turn (ADR-44, issue
+  #1).** A provider that answered 200, streamed part of the answer and then
+  dropped reached Claude Code as a short but well formed turn with
+  `stop_reason: end_turn`. On the translated lanes the proxy now ends that
+  stream with an error event instead of a synthesized clean close, and a tool
+  call rescued from the cut text is no longer delivered. In passthrough the
+  bytes are still forwarded untouched, but the request log gains
+  `streamError: truncated` and the provider no longer earns the success that
+  clears its failover cooldown. A stream that did send its `stop_reason` is
+  unaffected, even if the connection ends before `message_stop`.
+
 ## [0.1.2]
 
 ### Fixed

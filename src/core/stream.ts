@@ -105,9 +105,14 @@ export class OpenAIStreamTranslator {
     return events;
   }
 
-  /** Stream ended without [DONE]: emit the closing events anyway (§5: never leave the stream hanging). */
+  /** Stream ended without [DONE] (§5 punto 5). A finish_reason already seen is
+   *  enough to close the message: usage arrives after it, so [DONE] is only the
+   *  usual place to close, not the proof of one. No finish_reason at all means
+   *  the socket was cut mid answer, and closing here would hand Claude Code half
+   *  a turn labelled end_turn, indistinguishable from a real one (issue #1). */
   finish(): AnthropicStreamEvent[] {
     if (this.dead || this.closed) return [];
+    if (this.finishReason === null) return this.abort('[lupin] provider stream ended without a terminal event');
     const events: AnthropicStreamEvent[] = [];
     this.closeMessage(events);
     return events;

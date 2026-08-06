@@ -150,8 +150,21 @@ describe('streaming dialect wiring (§5 + §5bis)', () => {
 
   it('a tool call still open at stream end is flushed, not lost', () => {
     const t = new OpenAIStreamTranslator({ quirks: QUIRKS, hasTools: true });
-    const events = [...t.push(chunk({ content: '<tool_call>{"name":"Read","arguments":{}}' })), ...t.finish()];
+    const events = [
+      ...t.push(chunk({ content: '<tool_call>{"name":"Read","arguments":{}}' })),
+      ...t.push('data: [DONE]\n\n'),
+    ];
     expect(blocks(events)).toEqual([{ type: 'tool_use', index: 0 }]);
+  });
+
+  // §5 punto 5: the flush belongs to a stream that ended. On one that was cut
+  // there is no answer to complete, and a tool call rescued from half a frame is
+  // the worst thing to hand Claude Code (issue #1).
+  it('a tool call rescued from a CUT stream is not delivered: the error is', () => {
+    const t = new OpenAIStreamTranslator({ quirks: QUIRKS, hasTools: true });
+    const events = [...t.push(chunk({ content: '<tool_call>{"name":"Read","arguments":{}}' })), ...t.finish()];
+    expect(blocks(events)).toEqual([]);
+    expect(events.at(-1)?.event).toBe('error');
   });
 
   it('with no quirks the stream behaves exactly as before', () => {

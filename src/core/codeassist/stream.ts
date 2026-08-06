@@ -101,12 +101,12 @@ export class CodeAssistStreamTranslator {
     return events;
   }
 
-  /** Stream ended: close cleanly even if the last frame never arrived. */
+  /** Stream ended (§5 punto 5). The finishReason frame closes the message where
+   *  it arrives, so reaching here means it never did: the body was cut mid
+   *  answer and must surface as an error, not as a clean turn (issue #1). */
   finish(): AnthropicStreamEvent[] {
     if (this.dead || this.closed) return [];
-    const events: AnthropicStreamEvent[] = [];
-    this.closeMessage(events);
-    return events;
+    return this.abort('[lupin] provider stream ended without a terminal event');
   }
 
   /** Provider connection died mid-stream: one error event, then the stream is over. */

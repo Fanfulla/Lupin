@@ -129,10 +129,13 @@ describe('a multi-frame answer (the tool result round trip)', () => {
 });
 
 describe('failure modes', () => {
-  it('a truncated stream still closes the message', () => {
+  // §5 punto 5: the finishReason frame never arrived, so this is half an answer.
+  // Closing it would label it a complete turn (issue #1).
+  it('a truncated stream ends with an error, never with message_stop', () => {
     const half = capture('codeassist-stream-simple.sse').slice(0, 120);
     const evs = run(half);
-    expect(names(evs).at(-1)).toBe('message_stop');
+    expect(names(evs).at(-1)).toBe('error');
+    expect(names(evs)).not.toContain('message_stop');
   });
 
   it('a malformed frame ends the stream with an error, it does not throw', () => {

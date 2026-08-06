@@ -136,6 +136,52 @@ describe('usage logging (SPEC-TRANSLATION §9.1)', () => {
     expect(usage).toEqual({ input: 640, output: 12 });
   });
 
+  // Issue #1 (reported on r/LLMDevs, 2026-08-06): a 200 whose stream dies mid
+  // answer reaches Claude Code as a truncated but well formed turn. In
+  // passthrough the bytes are never rewritten (ADR-7), so the log is the only
+  // place that can say what happened.
+  it('flags a stream that ends with no message_stop and no stop_reason', async () => {
+    fake.respondWith({
+      kind: 'sse',
+      chunks: [
+        'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":9,"output_tokens":1}}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"text":"half an ans"}}\n\n',
+      ],
+    });
+    await run();
+
+    expect(lines.some((l) => l.streamError === 'truncated')).toBe(true);
+  });
+
+  it('a stream closed by message_stop is not flagged', async () => {
+    fake.respondWith({
+      kind: 'sse',
+      chunks: [
+        'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":9,"output_tokens":1}}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ],
+    });
+    await run();
+
+    expect(lines.some((l) => l.streamError === 'truncated')).toBe(false);
+  });
+
+  // The stop_reason is the answer's terminator; message_stop is the envelope's.
+  // A body cut between the two delivered a complete turn.
+  it('a stop_reason without the trailing message_stop is not a truncation', async () => {
+    fake.respondWith({
+      kind: 'sse',
+      chunks: [
+        'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":9,"output_tokens":1}}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":4}}\n\n',
+      ],
+    });
+    await run();
+
+    expect(lines.some((l) => l.streamError === 'truncated')).toBe(false);
+  });
+
   it('logs no usage line when the provider reports none', async () => {
     fake.respondWith({ kind: 'json', body: { type: 'message', content: [] } });
     await run();

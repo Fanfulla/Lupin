@@ -109,12 +109,12 @@ export class ResponsesStreamTranslator {
     return events;
   }
 
-  /** Stream ended without response.completed: close cleanly anyway (never hang). */
+  /** Stream ended without response.completed (§5 punto 5): every terminal path
+   *  closes the message on its own, so reaching here means the body stopped mid
+   *  answer. An error, never a synthesized clean turn (issue #1). */
   finish(): AnthropicStreamEvent[] {
     if (this.dead || this.closed) return [];
-    const events: AnthropicStreamEvent[] = [];
-    this.closeMessage(events);
-    return events;
+    return this.abort('[lupin] provider stream ended without a terminal event');
   }
 
   /** Provider connection died mid-stream: one error event, then the stream is over. */
