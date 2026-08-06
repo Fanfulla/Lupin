@@ -13,3 +13,6 @@ tui/target/
 # already, but a `git add -A` would have swept them into a public repo.
 .claude/
 
+# Launch material (Reddit/HN posts, presentation videos): local only, never published
+marketing/
+
