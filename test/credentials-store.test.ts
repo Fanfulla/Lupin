@@ -12,6 +12,7 @@ import {
   deleteOAuthTokens,
   getCredential,
   getOAuthTokens,
+  movedToKeychainAt,
   setCredential,
   setOAuthTokens,
   type OAuthTokens,
@@ -296,6 +297,53 @@ describe('lazy promotion from file to keychain', () => {
     setOAuthTokens('kimi', tokens({ accessToken: 'at-fresh', refreshToken: 'rt-fresh' }));
     expect(getOAuthTokens('kimi')?.accessToken).toBe('at-fresh');
     expect(readFileSync(credentialsPath(), 'utf8')).not.toContain('at-1');
+  });
+
+  it('promotion leaves a non-secret marker so a file-only install can tell the truth (ADR-43)', () => {
+    process.env.LUPIN_CREDSTORE = 'file';
+    configureCredentialStore();
+    setCredential('moonshot', 'sk-old');
+    setOAuthTokens('kimi', tokens());
+    delete process.env.LUPIN_CREDSTORE;
+    configureCredentialStore({ keyring: fakeKeyring() });
+    expect(getCredential('moonshot')).toBe('sk-old'); // promotes
+    expect(getOAuthTokens('kimi')).toEqual(tokens()); // promotes
+
+    const raw = readFileSync(credentialsPath(), 'utf8');
+    expect(raw).toContain('__inKeychain');
+    expect(raw).not.toContain('sk-old'); // the marker carries no secret
+    expect(raw).not.toContain('at-1');
+
+    // The 2026-08-05 split-brain, replayed: a file-only process on the same
+    // machine now names the move instead of claiming there is no credential.
+    configureCredentialStore({ keyring: null });
+    expect(movedToKeychainAt('moonshot')).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(movedToKeychainAt('oauth/kimi')).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(getCredential('moonshot')).toBeUndefined(); // the marker never impersonates the secret
+    expect(getOAuthTokens('kimi')).toBeUndefined();
+  });
+
+  it('a keychain-mode overwrite buries the stale file copy under the marker; the tombstone kills both', () => {
+    process.env.LUPIN_CREDSTORE = 'file';
+    configureCredentialStore();
+    setOAuthTokens('kimi', tokens());
+    delete process.env.LUPIN_CREDSTORE;
+    configureCredentialStore({ keyring: fakeKeyring() });
+    setOAuthTokens('kimi', tokens({ accessToken: 'at-fresh' })); // supersession, no read first
+    expect(readFileSync(credentialsPath(), 'utf8')).toContain('__inKeychain');
+    deleteOAuthTokens('kimi'); // a deleted credential must not leave a "look in the keychain" lie
+    expect(readFileSync(credentialsPath(), 'utf8')).not.toContain('__inKeychain');
+  });
+
+  it('the hint stays silent when it has nothing honest to say', () => {
+    // A keychain-capable install reads the real entry: no hint.
+    configureCredentialStore({ keyring: fakeKeyring() });
+    expect(movedToKeychainAt('moonshot')).toBeUndefined();
+    // A file-only install with no marker: plain absence, not a fabricated move.
+    configureCredentialStore({ keyring: null });
+    expect(movedToKeychainAt('missing')).toBeUndefined();
+    setCredential('moonshot', 'sk-live');
+    expect(movedToKeychainAt('moonshot')).toBeUndefined(); // a real secret is not a marker
   });
 
   it('promotes a chunk-sized token through the chunking store, verified', () => {

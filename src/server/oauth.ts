@@ -6,10 +6,12 @@ import {
   deleteOAuthTokens,
   getDeviceId,
   getOAuthTokens,
+  movedToKeychainAt,
   oauthNeedsRefresh,
   setOAuthTokens,
   type OAuthTokens,
 } from '../config/credentials.js';
+import { keychainLabel } from '../config/keychain.js';
 import type { DeviceOAuthProviderDef, OAuthProviderDef } from '../providers/oauth.js';
 import { splitAccountKey, tokenUrl } from '../providers/oauth.js';
 import { CLIENT_NAME, CLIENT_VERSION } from '../providers/identity.js';
@@ -267,6 +269,16 @@ export async function resolveOAuthAccessToken(def: OAuthProviderDef, opts: Resol
   const relogin = `lupin login ${def.aliases[0] ?? def.id}${account === undefined ? '' : ` --account ${account}`}`;
   const stored = getOAuthTokens(key);
   if (stored === undefined) {
+    // ADR-43: a marker means the credential is intact in the OS keychain and
+    // THIS install is the one that cannot read it. Advising a re-login there
+    // would be wrong twice: pointless work, and a lie about what happened.
+    const movedAt = movedToKeychainAt(`oauth/${key}`);
+    if (movedAt !== undefined) {
+      throw new OAuthError(
+        'not_logged_in',
+        `credentials for "${key}" live in the OS keychain (${keychainLabel()}, moved ${movedAt.slice(0, 10)}) and this install cannot read them: install the optional module (npm i @napi-rs/keyring) here, or run: ${relogin}`,
+      );
+    }
     throw new OAuthError('not_logged_in', `no OAuth credentials for "${key}": run: ${relogin}`);
   }
   // A token with no expiry and no refresh token (GitHub): refreshing it would

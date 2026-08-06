@@ -2,6 +2,8 @@
 // header. The translation core never sees where the token comes from (ADR-17).
 
 import { resolveApiKey, type ProfileConfig } from '../config/config.js';
+import { movedToKeychainAt } from '../config/credentials.js';
+import { keychainLabel } from '../config/keychain.js';
 import { OAUTH_PROVIDERS, splitAccountKey, type OAuthProviderDef } from '../providers/oauth.js';
 import { resolveOAuthAccessToken } from './oauth.js';
 import { clearCopilotTokenCache, resolveCopilotToken } from './copilot-token.js';
@@ -100,6 +102,14 @@ export async function resolveCredential(
 
   const apiKey = resolveApiKey(auth);
   if (apiKey === undefined || apiKey === '') {
+    // ADR-43: a marker means the key is intact in the OS keychain and this
+    // install is the one that cannot read it: say that, not "not found".
+    const movedAt = movedToKeychainAt(auth.apiKeyRef);
+    if (movedAt !== undefined) {
+      throw new CredentialError(
+        `API key "${auth.apiKeyRef}" lives in the OS keychain (${keychainLabel()}, moved ${movedAt.slice(0, 10)}) and this install cannot read it: install the optional module (npm i @napi-rs/keyring) here, or run: lupin init`,
+      );
+    }
     throw new CredentialError(`API key "${auth.apiKeyRef}" not found (env var or credential store): run: lupin init`);
   }
   return auth.type === 'x-api-key'

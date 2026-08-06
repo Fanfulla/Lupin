@@ -11,6 +11,15 @@ evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
 ### Fixed
 
+- **The credential split-brain now tells the truth (ADR-43).** The 0.1.1 known
+  limitation is resolved: when a secret moves from the 600 file into the OS
+  keychain (lazy promotion, or a keychain-mode overwrite of a stale file copy),
+  the file copy is replaced by a non-secret marker instead of being deleted. A
+  file-only install that misses the credential now says it lives in the OS
+  keychain this install cannot read, names the move date, and gives the real
+  fix (`npm i @napi-rs/keyring`, or a re-login) instead of claiming there are
+  no credentials. Deleting a credential removes the marker too, and a
+  pure-keychain write still never creates the file.
 - **A keychain that refuses a value no longer breaks the read that already has
   it.** Lazy promotion moves a secret from the 600 file into the OS keychain on
   first read; when the backend threw (the Windows blob-limit shape seen on

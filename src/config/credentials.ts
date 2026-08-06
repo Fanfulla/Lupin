@@ -131,8 +131,8 @@ export function setCredential(ref: string, value: string, path?: string): void {
   // copy of a superseded secret would survive on disk forever and could be
   // resurrected if the keychain entry later disappears: the tombstone
   // already does this for deletes: a set is a supersession and must bury
-  // the old copy the same way.
-  removeFileKey(ref);
+  // the old copy the same way. Buried under the marker, not erased (ADR-43).
+  buryFileKey(ref);
 }
 
 function oauthKey(provider: string): string {
@@ -175,7 +175,7 @@ export function setOAuthTokens(provider: string, tokens: OAuthTokens, path?: str
   s.store.set(oauthKey(provider), JSON.stringify(tokens));
   // Same rationale as setCredential: a set without a prior read never
   // triggers lazy promotion, so the stale file copy must be buried here too.
-  removeFileKey(oauthKey(provider));
+  buryFileKey(oauthKey(provider));
 }
 
 /** Tombstone (DESIGN-OAUTH §4.3): rejected refresh tokens are never reused.
@@ -205,17 +205,63 @@ function removeFileKey(ref: string): void {
   }
 }
 
+// --- The keychain marker (ADR-43) ---------------------------------------
+//
+// Whether an install HAS a keychain depends on an optional native module, so
+// a keychain-capable install can move a secret that a file-only install on
+// the same machine then cannot see (split-brain, seen live 2026-08-05). The
+// marker is the non-secret trace left in the file when that happens: the
+// file-only side can then say where the credential went instead of advising
+// a pointless re-login. It is an object whose only string field is a date,
+// so loadCredentials (strings only) and parseOAuth (needs accessToken) both
+// treat it as absence: only the miss-path error messages consult it.
+
+const KEYCHAIN_MARKER_KEY = '__inKeychain';
+
+function parseKeychainMarker(raw: unknown): string | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const m = raw as Record<string, unknown>;
+  return m[KEYCHAIN_MARKER_KEY] === true && typeof m['movedAt'] === 'string' ? m['movedAt'] : undefined;
+}
+
+/**
+ * The honest hint for a file-only install: "this credential lives in the OS
+ * keychain, moved there on <date>". Undefined when there is no marker, and
+ * always undefined when the keychain is active here: this install reads the
+ * real entry, so a marker with no keychain entry means the credential is
+ * gone, not hidden.
+ */
+export function movedToKeychainAt(ref: string): string | undefined {
+  if (activeStore().kind === 'keychain') return undefined;
+  return parseKeychainMarker(loadRaw(credentialsPath())[ref]);
+}
+
+/**
+ * Replaces a file copy with the marker; a no-op when the file never had the
+ * key, so a pure-keychain write still never creates credentials.json (the
+ * 2026-07-22 design rule).
+ */
+function buryFileKey(ref: string): void {
+  const p = credentialsPath();
+  const all = loadRaw(p);
+  if (ref in all) {
+    all[ref] = { [KEYCHAIN_MARKER_KEY]: true, movedAt: new Date().toISOString() };
+    saveRaw(p, all);
+  }
+}
+
 /**
  * Lazy promotion (design §Visibilità): keychain active but the secret lives
  * only in the file (e.g. a LUPIN_CREDSTORE=file period). The read serves it,
  * copies it into the keychain, VERIFIES it by reading it back, and only after
- * that verification removes it from the file: a flaky keychain must never
- * cost the only copy. Steady state: zero secrets on disk.
+ * that verification buries the file copy under the non-secret marker
+ * (ADR-43): a flaky keychain must never cost the only copy. Steady state:
+ * zero secrets on disk.
  */
 function promote(store: KeychainStore, ref: string, value: string): void {
   try {
     store.set(ref, value);
-    if (store.get(ref) === value) removeFileKey(ref);
+    if (store.get(ref) === value) buryFileKey(ref);
   } catch {
     // Promotion is opportunistic: a backend that refuses the value (seen live
     // 2026-08-05, Windows blob limit) must not break the read that already

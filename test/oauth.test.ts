@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -169,6 +169,13 @@ describe('token resolution and refresh (DESIGN-OAUTH §4.3)', () => {
 
   it('no stored credentials → clear not_logged_in error', async () => {
     await expect(resolveOAuthAccessToken(fake.def)).rejects.toMatchObject({ code: 'not_logged_in' });
+  });
+
+  it('a keychain marker → the error names the keychain, never a missing login (ADR-43)', async () => {
+    const p = process.env.LUPIN_CREDENTIALS ?? '';
+    writeFileSync(p, JSON.stringify({ [`oauth/${fake.def.id}`]: { __inKeychain: true, movedAt: '2026-08-06T00:00:00.000Z' } }));
+    await expect(resolveOAuthAccessToken(fake.def)).rejects.toThrow(/keychain/i);
+    await expect(resolveOAuthAccessToken(fake.def)).rejects.toThrow(/@napi-rs\/keyring/);
   });
 });
 

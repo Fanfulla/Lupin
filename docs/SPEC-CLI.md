@@ -112,7 +112,7 @@ The public scoreboard generated from the submissions stays M5: `--submit` is its
 
 ## 4. Security
 
-1. API keys in the OS keychain (implemented 2026-07-22 with @napi-rs/keyring, ADR-26; keytar is archived); fallback: the file `~/.lupin/credentials` with 600 permissions. Never in the config, never in the logs.
+1. API keys in the OS keychain (implemented 2026-07-22 with @napi-rs/keyring, ADR-26; keytar is archived); fallback: the file `~/.lupin/credentials` with 600 permissions. Never in the config, never in the logs. When a secret moves from the file into the keychain, the file copy is replaced by a non-secret marker (ADR-43) so a file-only install on the same machine reports where the credential lives instead of advising a pointless re-login.
 2. The server binds to `127.0.0.1` only; it refuses requests without the `localToken`.
 3. No telemetry. The scoreboard receives explicit submissions only (`lupin doctor --submit`, opt-in).
 
