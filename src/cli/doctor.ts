@@ -135,6 +135,11 @@ export async function doctorCommand(args: string[]): Promise<number> {
     if (profile.quirks !== undefined && profile.quirks.length > 0) {
       console.log(`Active quirks: ${profile.quirks.join(', ')} (from the profile, not measured)`);
     }
+    // This one IS measured, and it is the number that tells an adapter that
+    // helped from one that never fired (§5quater): both leave the score alone.
+    if (result.editHints > 0) {
+      console.log(`editRetryHint fired on ${String(result.editHints)} turn(s): that many edits were rejected`);
+    }
     // §5bis rule 3: a high score earned thanks to a repair is a different
     // verdict from a high score without one. The number alone cannot say it.
     if (result.dialects.length > 0) {

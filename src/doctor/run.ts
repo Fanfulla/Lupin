@@ -132,6 +132,13 @@ export interface DoctorRunResult {
    * 10/10, and the score alone cannot tell them apart.
    */
   dialects: string[];
+  /**
+   * Turns on which editRetryHint fired (§5quater, ADR-45). Zero when the quirk
+   * is off, and zero when it is on and the model never got an edit rejected:
+   * the two read the same in the score and mean opposite things, which is what
+   * makes this number the difference between a measured adapter and a placebo.
+   */
+  editHints: number;
   /** Passthrough only: does the provider accept cache_control (§5ter)? */
   cacheControl?: CacheControlProbe;
   /**
@@ -321,13 +328,17 @@ export async function runDoctor(userConfig: LupinConfig, profileName: string): P
   const doctorConfig: LupinConfig = { ...userConfig, activeProfile: profileName };
   const dialects = new Set<string>();
   const metrics = createMetricsCollector();
+  let editHints = 0;
 
   const { port, close } = await startDoctorServer(
     doctorConfig,
     (applied) => {
       for (const q of applied) dialects.add(q);
     },
-    metrics.add,
+    (line) => {
+      if (line.editHint === true) editHints += 1;
+      metrics.add(line);
+    },
   );
 
   // Cheaper to learn here than mid-task, and worth learning even when the
@@ -351,6 +362,7 @@ export async function runDoctor(userConfig: LupinConfig, profileName: string): P
       model: slotModel(doctorConfig, profileName),
       durationMs: 0,
       dialects: [],
+      editHints: 0,
       ...(cacheControl !== undefined ? { cacheControl } : {}),
       notRun: preflight.detail,
     };
@@ -431,6 +443,7 @@ export async function runDoctor(userConfig: LupinConfig, profileName: string): P
     model,
     durationMs: Date.now() - started,
     dialects: [...dialects],
+    editHints,
     ...(cacheControl !== undefined ? { cacheControl } : {}),
     ...(costUsd !== undefined ? { costUsd } : {}),
     ...(sessionError !== undefined ? { sessionError } : {}),

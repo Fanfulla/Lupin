@@ -22,6 +22,7 @@ function input(overrides: Partial<DoctorRunResult> = {}): SubmissionInput {
     model: 'kimi-k3',
     durationMs: 92_000,
     dialects: [],
+    editHints: 0,
     report: {
       score: 9,
       max: 10,

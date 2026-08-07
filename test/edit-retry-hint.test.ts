@@ -218,6 +218,27 @@ describe('through the proxy', () => {
   // this one comes and goes, so the volatile block goes last. Any other order
   // would move the identity block's index the first time an edit fails, and the
   // provider's cached prefix would end at a different boundary (§3ter).
+  // An intervention nobody can see cannot be evaluated: without this field the
+  // A/B that has to justify the quirk could not tell "did not help" from "never
+  // fired", which are opposite verdicts that leave the same score.
+  it('says on the log line that it fired, and stays quiet when it did not', async () => {
+    const lines: { editHint?: true }[] = [];
+    const run = async (body: Record<string, unknown>): Promise<void> => {
+      const fetchImpl = vi.fn(() =>
+        Promise.resolve(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })),
+      );
+      const app = createApp(config(['editRetryHint']), {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        logger: (l) => lines.push(l),
+      });
+      await app.request('/v1/messages', { method: 'POST', headers: auth, body: JSON.stringify(body) });
+    };
+    await run(failedEditBody);
+    await run({ ...failedEditBody, messages: [{ role: 'user', content: 'nothing failed here' }] });
+    expect(lines[0]?.editHint).toBe(true);
+    expect(lines[1]?.editHint).toBeUndefined();
+  });
+
   it('goes after identityHint, which keeps its position', async () => {
     const sent = await send(['identityHint', 'editRetryHint']);
     const system = sent['system'] as { text: string }[];

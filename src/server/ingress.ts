@@ -175,6 +175,10 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
     // §5bis rule 3: a normalization that fires silently is indistinguishable
     // from a provider that never needed one. The log has to say which it was.
     let dialect: string[] | undefined = undefined;
+    // §5quater rule: same argument as `dialect`, on the request side. A hint
+    // that fires invisibly cannot be told from a model that never needed one,
+    // and the A/B that has to justify the quirk would measure nothing.
+    let editHint: true | undefined = undefined;
     // The account tier could not serve the requested slot: another model
     // answered, and the log has to say so.
     let tierDowngrade: string | undefined = undefined;
@@ -205,6 +209,7 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
         ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
         ...(cooldownSkip !== undefined ? { cooldown: cooldownSkip } : {}),
         ...(dialect !== undefined ? { dialect } : {}),
+        ...(editHint !== undefined ? { editHint } : {}),
         ...(tierDowngrade !== undefined ? { tierDowngrade } : {}),
         ...(quotaSwitch !== undefined ? { quotaSwitch } : {}),
         ...(profileSwitch !== undefined ? { profileSwitch } : {}),
@@ -367,6 +372,7 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
         }
         if (profile.quirks?.includes('editRetryHint') === true && lastEditFailed(body['messages'])) {
           system = withEditRetryHint(system);
+          editHint = true;
         }
       }
       const outgoing = system === body['system'] ? body : { ...body, system };
