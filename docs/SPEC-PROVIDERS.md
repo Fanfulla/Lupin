@@ -350,6 +350,8 @@ Back to route semantics:
 | `clientErrorsWrappedIn500` | the runtime answers HTTP 500 while wrapping the engine's real 4xx in the message: the nested status is read and mapped to a permanent 400 instead of a retryable 529 |
 | `stripDoneSentinel` | passthrough: filter the trailing `data: [DONE]` frame from the stream (the OpenRouter Anthropic skin emits it, the Anthropic protocol does not; to be confirmed with an authenticated request before implementing) |
 | `raiseStreamIdleTimeout` | `lupin run` launch env: fill `CLAUDE_STREAM_IDLE_TIMEOUT_MS=600000` when the variable is unset (an explicit user value always wins, empty included) |
+| `identityHint` | request: append ONE system block naming the model and provider that really answer, so the session can be asked (§5ter, ADR-39). Opt-in, never default: it edits the request body |
+| `editRetryHint` | request: after an edit the tool rejected, append ONE system block naming the exact-match rule (§5quater, ADR-45). Opt-in, never default, and **unproven**: its first measurement did not show it helping (ADR-46) |
 
 **`clientErrorsWrappedIn500`** (verified live on LM Studio 2026-07-19, on by default for the `lmstudio` profile): a context overflow arrived as `HTTP 500 {"error":{"message":"Engine ... returned 400: {\"code\":400,\"type\":\"exceed_context_size_error\"}"}}`. The general rule `status >= 500 -> 529 overloaded_error` made it retryable: Claude Code repeated four times a request that could not succeed, and then showed "the API is at capacity", hiding the real cause. The nested status is recognized from `returned <4xx>` in the message or from a 4xx `code` in the wrapped JSON; a genuine 500 (no nested 4xx) stays 529. Not verified on Ollama and llama.cpp: the flag is per profile, not per family.
 
