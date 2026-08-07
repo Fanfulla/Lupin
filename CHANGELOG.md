@@ -9,6 +9,20 @@ evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
 ## [Unreleased]
 
+### Added
+
+- **`editRetryHint`, the first behavioural adapter (ADR-45, opt-in).** Edits are
+  applied by exact match, and a model that returns the right content with the
+  wrong bytes (re-indented, tabs for spaces, trailing newline dropped) gets its
+  edit refused, then often resends the same `old_string` for several turns. With
+  this quirk enabled on a profile, the turn right after a rejected edit carries
+  one extra system block naming the exact-match rule and telling the model to
+  copy the bytes rather than retype them. It repairs nothing on the model's
+  behalf: the proxy never rewrites `old_string`, because it has neither the file
+  nor a way to know which occurrence was meant, and a wrong guess would corrupt
+  a source file. Off by default, never applied to `count_tokens`, and its
+  efficacy on a real model is not yet measured (see ROADMAP M5).
+
 ### Changed
 
 - **`lupin doctor` now names the quirks active on the profile.** The report

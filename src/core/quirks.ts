@@ -21,6 +21,9 @@ export const KNOWN_QUIRKS = [
   // Request quirk: appends a system block naming the model that really answers
   // (ADR-39). Opt-in, never default: it edits the request body.
   'identityHint',
+  // Request quirk: appends a system block on the turn after a rejected edit
+  // (ADR-45). Opt-in, never default: it edits the request body.
+  'editRetryHint',
 ] as const;
 
 export type QuirkName = (typeof KNOWN_QUIRKS)[number];
@@ -60,13 +63,84 @@ export function identityHintText(model: string, provider: string): string {
 }
 
 /**
- * The request `system` with the hint appended, in the shape it already had.
+ * The request `system` with one block appended, in the shape it already had.
  * Returns the input untouched when there is nothing sensible to append to.
  */
-export function withIdentityHint(system: unknown, model: string, provider: string): unknown {
-  const hint = identityHintText(model, provider);
-  if (system === undefined || system === null) return [{ type: 'text', text: hint }];
-  if (typeof system === 'string') return system === '' ? hint : `${system}\n\n${hint}`;
-  if (Array.isArray(system)) return [...system, { type: 'text', text: hint }];
+function appendSystemBlock(system: unknown, text: string): unknown {
+  if (system === undefined || system === null) return [{ type: 'text', text }];
+  if (typeof system === 'string') return system === '' ? text : `${system}\n\n${text}`;
+  if (Array.isArray(system)) return [...system, { type: 'text', text }];
   return system; // an unknown shape is left alone: never corrupt a request to add a note
+}
+
+export function withIdentityHint(system: unknown, model: string, provider: string): unknown {
+  return appendSystemBlock(system, identityHintText(model, provider));
+}
+
+/**
+ * editRetryHint (SPEC-PROVIDERS §5quater, ADR-45): an edit is applied by exact
+ * match, and models that are not Claude routinely return content that is right
+ * in meaning and wrong in bytes (re-indented, tabs turned into spaces, trailing
+ * newline dropped). The tool refuses, and the expensive part is not the refusal:
+ * it is the model resending the same `old_string` for three turns.
+ *
+ * This says what went wrong once, on the turn where it can still be acted on.
+ * It repairs nothing on the model's behalf: the proxy has neither the file nor
+ * the right to guess which occurrence was meant.
+ */
+export function editRetryHintText(): string {
+  return (
+    '[Lupin] The previous edit was rejected. Edits are applied by exact match: `old_string` must reproduce the ' +
+    'file byte for byte, including indentation, tabs versus spaces, and the trailing newline. Re-read the region ' +
+    'you are changing and copy those bytes verbatim instead of retyping them from memory. Do not send the same ' +
+    '`old_string` again unchanged.'
+  );
+}
+
+export function withEditRetryHint(system: unknown): unknown {
+  return appendSystemBlock(system, editRetryHintText());
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+function blocksOf(message: unknown): unknown[] {
+  if (!isRecord(message)) return [];
+  const content = message['content'];
+  return Array.isArray(content) ? content : [];
+}
+
+/** An edit call is one that carried an `old_string`, MultiEdit's list included. */
+function carriesOldString(input: unknown): boolean {
+  if (!isRecord(input)) return false;
+  if (typeof input['old_string'] === 'string') return true;
+  const edits = input['edits'];
+  return Array.isArray(edits) && edits.some((e) => isRecord(e) && typeof e['old_string'] === 'string');
+}
+
+/**
+ * True when the LAST turn carries a failed tool_result whose call was an edit.
+ * Only the last turn, because the hint exists for the model that is about to
+ * retry: once the edit lands, repeating it every turn would nag about something
+ * already fixed and pay for the tokens each time. And only an edit-shaped call,
+ * because a Bash that exits 1 is a failure this hint has nothing to say about.
+ */
+export function lastEditFailed(messages: unknown): boolean {
+  if (!Array.isArray(messages) || messages.length === 0) return false;
+  const failedIds = new Set<string>();
+  for (const block of blocksOf(messages[messages.length - 1])) {
+    if (!isRecord(block) || block['type'] !== 'tool_result' || block['is_error'] !== true) continue;
+    const id = block['tool_use_id'];
+    if (typeof id === 'string') failedIds.add(id);
+  }
+  if (failedIds.size === 0) return false;
+  for (let i = messages.length - 2; i >= 0; i--) {
+    for (const block of blocksOf(messages[i])) {
+      if (!isRecord(block) || block['type'] !== 'tool_use') continue;
+      const id = block['id'];
+      if (typeof id === 'string' && failedIds.has(id) && carriesOldString(block['input'])) return true;
+    }
+  }
+  return false;
 }

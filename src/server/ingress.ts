@@ -14,7 +14,7 @@ import {
   type NormalizedError,
 } from '../core/errors.js';
 import { estimateInputTokens } from '../core/tokens.js';
-import { withIdentityHint } from '../core/quirks.js';
+import { lastEditFailed, withEditRetryHint, withIdentityHint } from '../core/quirks.js';
 import { observeCacheUsage } from './cache-watch.js';
 import type { AnthropicRequest } from '../core/request.js';
 import type { OAuthProviderDef } from '../providers/oauth.js';
@@ -355,10 +355,21 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
       // A COPY, never a reassignment of `body`: this function runs again on the
       // failover profile, and mutating the shared body would append a second
       // hint there, naming a different model than the first one.
-      const outgoing =
-        profile.quirks?.includes('identityHint') === true && path !== '/v1/messages/count_tokens'
-          ? { ...body, system: withIdentityHint(body['system'], model, profile.provider) }
-          : body;
+      //
+      // editRetryHint (§5quater, ADR-45) rides the same seam, and goes LAST:
+      // the identity block is constant for the session while this one comes and
+      // goes with the failures, so appending it after keeps every earlier block
+      // at the same index and the cached prefix boundary where it was.
+      let system = body['system'];
+      if (path !== '/v1/messages/count_tokens') {
+        if (profile.quirks?.includes('identityHint') === true) {
+          system = withIdentityHint(system, model, profile.provider);
+        }
+        if (profile.quirks?.includes('editRetryHint') === true && lastEditFailed(body['messages'])) {
+          system = withEditRetryHint(system);
+        }
+      }
+      const outgoing = system === body['system'] ? body : { ...body, system };
 
       const def = PROVIDERS[profile.provider];
 

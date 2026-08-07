@@ -368,6 +368,17 @@ Through a proxy the model reads the Claude Code system prompt and introduces its
 - **`count_tokens` is never touched**: it is a measurement, and inflating it would make the client budget against a prompt it is not sending.
 - **Still untested against the real harness**: whether the Claude Code system prompt argues with the hint (it insists on the assistant's identity in several places) needs a live session. The quirk exists; the claim that it wins does not.
 
+### 5quater. `editRetryHint`: answering a rejected edit once (2026-08-07, ADR-45, the first M5 adapter)
+
+Edits are applied by exact match. Models that are not Claude routinely return content that is right in meaning and wrong in bytes (re-indented, tabs turned into spaces, the trailing newline dropped), the tool refuses, and the expensive part is not the refusal: it is the model resending the same `old_string` for three turns. This quirk says what the rule is once, on the turn where it can still be acted on.
+
+- **Opt-in per profile, never on by default** (ADR-7), same as §5ter: it edits the request body.
+- **It repairs nothing.** The proxy does not rewrite `old_string`, and must not: it has neither the file (it sees the conversation, not the workspace) nor any way to know which occurrence was meant, and a fuzzy match that picks the wrong one corrupts a source file. It would also launder the model's own defect, so the doctor would stop measuring the model (§5bis rule 3 exists for that reason).
+- **Fires on the last turn only, and only for an edit-shaped call.** The trigger is a `tool_result` with `is_error: true` in the incoming turn whose `tool_use` carried an `old_string` (MultiEdit's `edits[]` included). A `Bash` that exits 1 is a failure this hint has nothing to say about, and a failure five turns back is already answered: repeating it would nag and be paid for every turn.
+- **Appended LAST, after the identity block.** §5ter's block is constant for the session while this one comes and goes, so it goes after: every earlier block keeps its index and the cached prefix boundary does not move the first time an edit fails (§3ter).
+- **`count_tokens` is never touched**, same reason as §5ter.
+- **The mechanism is verified, the efficacy is not.** Fixtures pin when it fires, where it goes and that it is off by default (`test/edit-retry-hint.test.ts`). Whether it actually raises the doctor score on a weak model is the M5 A/B criterion, and it is unmeasured until that run exists.
+
 **The cache-bust detector** (backlog #11c, ADR-40, `src/server/cache-watch.ts`): the same §3ter prefix rule, watched from the numbers the provider already reports. Per profile, in memory, the previous request's `cache_read` and total input are kept. When the cache goes from warm (`cache_read > 0`) to cold (`cache_read == 0`) while the prompt did NOT get smaller, the request logs `cacheBust: true`. That size comparison is what separates a broken prefix from an ordinary new conversation, which also starts cold but starts small, and it needs no invented threshold: the comparison is against what that same profile really sent last time. A provider that reports no cache fields is never judged (absent is not zero, §8) and its history is dropped. **No prompt bytes are held, not even hashed**: the backlog idea was to keep prefixes in memory and diff them, and two integers answer the same question without stretching ADR-12.
 
 ## 5bis. The client's identity towards the provider
