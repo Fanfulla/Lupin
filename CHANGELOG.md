@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
-## [Unreleased]
+## [0.2.0]
 
 ### Added
 
