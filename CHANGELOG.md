@@ -20,8 +20,12 @@ evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
   copy the bytes rather than retype them. It repairs nothing on the model's
   behalf: the proxy never rewrites `old_string`, because it has neither the file
   nor a way to know which occurrence was meant, and a wrong guess would corrupt
-  a source file. Off by default, never applied to `count_tokens`, and its
-  efficacy on a real model is not yet measured (see ROADMAP M5).
+  a source file. Off by default, never applied to `count_tokens`, and the report
+  now says on how many turns it fired, because an adapter nobody can see cannot
+  be judged. **Enable it knowing that it is unproven**: the first live
+  measurement (2026-08-07) confirmed it fires exactly when it should, and did
+  not show it helping, on a model that turned out not to have the defect it
+  targets. The numbers and what they do not license are in ROADMAP M5.
 
 ### Changed
 
