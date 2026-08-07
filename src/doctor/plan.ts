@@ -155,6 +155,11 @@ const TRANSPORT_TERMINAL_REASONS = new Set(['api_error', 'auth_error']);
  * "terminal_reason":"api_error"}` was scored as a completed session, turning an
  * infrastructure failure into a 1/10 that read as a verdict on the model.
  * is_error and terminal_reason are the fields that tell the truth.
+ *
+ * So the fields are read in the reverse of the order they read in: the name
+ * `subtype` promises a verdict and only describes how Claude Code's own loop
+ * exited, and it is consulted last. terminal_reason states the outcome on its
+ * own, and the recorded capture carrying is_error too was luck, not a rule.
  */
 export function interpretHeadlessResult(parsed: Record<string, unknown>): HeadlessResult {
   const resultText = typeof parsed['result'] === 'string' ? parsed['result'] : JSON.stringify(parsed).slice(0, 300);
@@ -164,13 +169,12 @@ export function interpretHeadlessResult(parsed: Record<string, unknown>): Headle
   const isError = parsed['is_error'] === true;
 
   const base = { resultText, ...(costUsd !== undefined ? { costUsd } : {}) };
-  const neverRan = terminal !== undefined && TRANSPORT_TERMINAL_REASONS.has(terminal);
-  if (subtype !== 'success') {
+  if (terminal !== undefined && TRANSPORT_TERMINAL_REASONS.has(terminal)) {
     return {
       ...base,
       ok: false,
-      failure: `session closed with subtype "${subtype}"`,
-      ...(neverRan ? { neverRan } : {}),
+      failure: `the session died on the transport (terminal_reason: ${terminal})`,
+      neverRan: true,
     };
   }
   if (isError) {
@@ -178,8 +182,10 @@ export function interpretHeadlessResult(parsed: Record<string, unknown>): Headle
       ...base,
       ok: false,
       failure: `the session ended in error (terminal_reason: ${terminal ?? 'not declared'})`,
-      ...(neverRan ? { neverRan } : {}),
     };
+  }
+  if (subtype !== 'success') {
+    return { ...base, ok: false, failure: `session closed with subtype "${subtype}"` };
   }
   return { ...base, ok: true };
 }

@@ -122,6 +122,23 @@ describe('headless session result, honestly read', () => {
     expect(r.ok).toBe(false);
     expect(r.failure).toContain('error_max_turns');
   });
+
+  // The recorded capture happened to carry is_error alongside terminal_reason,
+  // so reading subtype first survived it by luck. terminal_reason alone already
+  // says the session died on the transport, and it decides on its own: without
+  // this, ADR-23 walks back in through a line that claims success everywhere
+  // except in the one field that states the outcome.
+  it('a transport terminal_reason voids the run even when nothing else complains', () => {
+    const r = interpretHeadlessResult({
+      subtype: 'success',
+      is_error: false,
+      terminal_reason: 'api_error',
+      result: '',
+    });
+    expect(r.ok).toBe(false);
+    expect(r.neverRan).toBe(true);
+    expect(r.failure).toContain('api_error');
+  });
 });
 
 // The profile already carries the window; running a doomed session and calling

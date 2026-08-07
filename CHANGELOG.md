@@ -11,6 +11,14 @@ evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
 ### Fixed
 
+- **`lupin doctor` no longer scores a session that died on the transport
+  (ADR-23).** The headless result was still read starting from `subtype`, whose
+  name promises a verdict and only reports how Claude Code's own loop exited. A
+  run whose `terminal_reason` is `api_error` or `auth_error` is now voided on
+  that field alone, without waiting for `is_error` to agree, so a provider that
+  never answered can no longer earn the "session completed" point and a score
+  that reads as a judgement on the model.
+
 - **A truncated stream is no longer reported as a finished turn (ADR-44, issue
   #1).** A provider that answered 200, streamed part of the answer and then
   dropped reached Claude Code as a short but well formed turn with
