@@ -113,6 +113,15 @@ export async function doctorCommand(args: string[]): Promise<number> {
       if (receipt !== undefined) console.log(receipt);
     }
     if (result.sessionError !== undefined) console.log(`Session note: ${result.sessionError}`);
+    // Configuration, not an observation, so no warning glyph: these are true on
+    // every run of the profile. Worth printing anyway, because some of them
+    // (noParallelToolCalls, singleSystemMessage, identityHint) change what the
+    // model was asked, and a score earned under them is not comparable with a
+    // bare one. The submission has always declared them: the terminal was the
+    // one place that knew less than the scoreboard.
+    if (profile.quirks !== undefined && profile.quirks.length > 0) {
+      console.log(`Active quirks: ${profile.quirks.join(', ')} (from the profile, not measured)`);
+    }
     // §5bis rule 3: a high score earned thanks to a repair is a different
     // verdict from a high score without one. The number alone cannot say it.
     if (result.dialects.length > 0) {

@@ -9,6 +9,18 @@ evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
 ## [Unreleased]
 
+### Changed
+
+- **`lupin doctor` now names the quirks active on the profile.** The report
+  printed the dialect normalizations that fired but never the quirks configured
+  on the profile, which the `--submit` body has always carried: the person
+  reading their own terminal knew less than a stranger reading the scoreboard.
+  The new line carries no warning glyph, because a configured quirk is true on
+  every run and an alarm that always fires stops being read. It is printed
+  because some request quirks (`noParallelToolCalls`, `singleSystemMessage`,
+  `identityHint`) change what the model was asked, so a score earned under them
+  is not comparable with a bare one.
+
 ### Fixed
 
 - **`lupin doctor` no longer scores a session that died on the transport

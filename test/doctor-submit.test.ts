@@ -59,6 +59,17 @@ describe('submissionBody: what travels', () => {
     expect(body).toContain('parseTextToolCalls');
   });
 
+  // The configured quirks and the repairs that fired are two different kinds of
+  // fact: one is the setup, the other is what the model did in this run. Merging
+  // them would make "the proxy helped this score" fire on every run of a profile
+  // that merely needs a request-shape quirk, and a claim that always fires stops
+  // being read. So both travel, and only the second one accuses the model.
+  it('declares the configured quirks without claiming the proxy helped the score', () => {
+    const body = submissionBody(input({ dialects: [] }));
+    expect(body).toContain('Active quirks: clientErrorsWrappedIn500');
+    expect(body).not.toContain('helped this score');
+  });
+
   it('reports a voided run as its cause, never as a score', () => {
     const body = submissionBody(input({ report: undefined, notRun: 'context window too small' }));
     expect(body).toContain('Doctor did NOT run: context window too small');

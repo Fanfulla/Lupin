@@ -98,6 +98,8 @@ The session budget **must** be larger than the per-request ceiling (`PROVIDER_TI
 
 The value is **derived** from the provider timeout (times 3), not written beside it: raising one cannot silently invalidate the other, and a test keeps them tied. `LUPIN_DOCTOR_TIMEOUT_MS` overrides it for slow local hardware, where a single 46K-token prefill can run for minutes; an invalid value (zero, negative, non numeric) falls back to the default instead of disabling the timeout.
 
+Two facts that read alike and are not: the quirks **configured** on the profile, and the dialect normalizations that **fired**. The report prints both, and only the second one is a warning. A configured quirk is true on every run of that profile, so an alarm on it would fire always and would stop being read, while a normalization that fired means the model produced something Claude Code could not use and the proxy repaired it (§5bis rule 3). The configured list is printed anyway, without a glyph, because some request quirks (`noParallelToolCalls`, `singleSystemMessage`, `identityHint`) change what the model was asked, and a score earned under them is not comparable with a bare one.
+
 The distinction that matters: a transport `terminal_reason` (`api_error`, `auth_error`) voids the verdict. The `notRun` field replaces the score, the exit code is 1 and **`lastDoctor` is not written** (a 0 nobody earned would poison the history). A model too weak to finish the task is instead a legitimate result and keeps its score.
 
 ### 3.3 `--submit`: a pre-filled issue, not an upload (implemented 2026-07-24)
