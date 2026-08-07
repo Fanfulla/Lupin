@@ -60,6 +60,8 @@ function markers(line: RequestLogLine): string {
   if (line.cooldown !== undefined) parts.push(`cooldown:${line.cooldown}`);
   if (line.retryAfterMs !== undefined) parts.push(`waited:${String(line.retryAfterMs)}ms`);
   if (line.dialect !== undefined && line.dialect.length > 0) parts.push(`dialect:${line.dialect.join('+')}`);
+  // No value to print: the field is either there or absent (§5quater).
+  if (line.editHint === true) parts.push('editHint');
   if (line.streamError !== undefined) parts.push(`streamError:${line.streamError}`);
   return parts.join(' ');
 }

@@ -38,7 +38,7 @@ Daemon status; stop; tail of the structured logs.
 
 ### `lupin top` (implemented 2026-07-25, backlog #8)
 
-The console of truth in the terminal, refreshed every second: profiles with their slots, health and last doctor score; the models the daemon is REALLY serving right now (from `GET /health`, so the answer does not come from the model); and the recent requests from the log tail, each carrying its routing markers (`routed`, `failedOver`, `cooldown`, `retryAfterMs`, `dialect`, `streamError`). Keys: `q` quits, `1` to `9` switch the active profile.
+The console of truth in the terminal, refreshed every second: profiles with their slots, health and last doctor score; the models the daemon is REALLY serving right now (from `GET /health`, so the answer does not come from the model); and the recent requests from the log tail, each carrying its routing markers (`routed`, `failedOver`, `cooldown`, `retryAfterMs`, `dialect`, `editHint`, `streamError`), the same set and the same wording on both front ends: `lupin top` in Node and the Rust sidecar print one log line identically, and a test on each side pins it. Keys: `q` quits, `1` to `9` switch the active profile.
 
 Deliberately plain: ANSI escapes plus polling, no ink, no React, no dependency at all, so it works over SSH and in Windows Terminal (the "no heavy dependencies" constraint of backlog #8). The whole screen is a pure function of a snapshot, which is what makes the layout testable without a terminal, and with a non-TTY stdout it prints one frame and exits instead of repainting into a pipe.
 

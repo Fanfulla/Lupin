@@ -29,6 +29,13 @@ evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
 ### Changed
 
+- **The Rust sidecar shows the same request markers as `lupin top`.** It was
+  reading four of them and dropping three, so `retryAfterMs` and `dialect` were
+  documented but invisible there, and the new `editHint` would have been too. All
+  three now print, in the wording the Node side has always used (`waited:1500ms`,
+  `dialect:a+b`, `editHint`), with a test on each side: one log line reads the
+  same whichever front end is watching it. An empty `dialect` list prints
+  nothing rather than a marker with no name.
 - **`lupin doctor` now names the quirks active on the profile.** The report
   printed the dialect normalizations that fired but never the quirks configured
   on the profile, which the `--submit` body has always carried: the person

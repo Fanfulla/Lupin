@@ -28,6 +28,16 @@ pub struct LogLine {
     pub failed_over: Option<String>,
     #[serde(default)]
     pub cooldown: Option<String>,
+    // The three markers top.ts has always printed and this side did not read, so
+    // the sidecar showed less than SPEC-CLI section 2 promised of it.
+    #[serde(default)]
+    #[serde(rename = "retryAfterMs")]
+    pub retry_after_ms: Option<u64>,
+    #[serde(default)]
+    pub dialect: Option<Vec<String>>,
+    #[serde(default)]
+    #[serde(rename = "editHint")]
+    pub edit_hint: Option<bool>,
     #[serde(default)]
     #[serde(rename = "streamError")]
     pub stream_error: Option<String>,
@@ -79,6 +89,19 @@ impl LogLine {
         }
         if let Some(c) = &self.cooldown {
             parts.push(format!("cooldown:{c}"));
+        }
+        // The strings are top.ts's, character for character: one log line must
+        // read the same whichever front end is watching it.
+        if let Some(w) = self.retry_after_ms {
+            parts.push(format!("waited:{w}ms"));
+        }
+        if let Some(d) = &self.dialect {
+            if !d.is_empty() {
+                parts.push(format!("dialect:{}", d.join("+")));
+            }
+        }
+        if self.edit_hint == Some(true) {
+            parts.push("editHint".to_string());
         }
         if let Some(s) = &self.stream_error {
             parts.push(format!("streamError:{s}"));
@@ -144,13 +167,28 @@ mod tests {
     #[test]
     fn the_markers_name_every_routing_event_that_fired() {
         let raw = r#"{"ts":"t","profile":"p","model":"m","path":"/v1/messages","status":200,
-            "latencyMs":1,"routed":"vision","failedOver":"other","cooldown":"3s","streamError":"boom"}"#;
+            "latencyMs":1,"routed":"vision","failedOver":"other","cooldown":"3s","retryAfterMs":1500,
+            "dialect":["stripThinkTags","looseJsonArguments"],"editHint":true,"streamError":"boom"}"#;
         let l: LogLine = serde_json::from_str(raw).expect("parses");
         let m = l.markers();
         assert!(m.contains("routed:vision"));
         assert!(m.contains("failover<-other"));
         assert!(m.contains("cooldown:3s"));
         assert!(m.contains("streamError:boom"));
+        // The three the sidecar used to drop, in top.ts's wording exactly.
+        assert!(m.contains("waited:1500ms"));
+        assert!(m.contains("dialect:stripThinkTags+looseJsonArguments"));
+        assert!(m.contains("editHint"));
+    }
+
+    /// An empty dialect array means "no repair fired" and must print nothing:
+    /// a bare `dialect:` would read as a normalization with a missing name.
+    #[test]
+    fn an_empty_dialect_list_prints_no_marker() {
+        let raw = r#"{"ts":"t","profile":"p","model":"m","path":"/v1/messages","status":200,
+            "latencyMs":1,"dialect":[],"editHint":false}"#;
+        let l: LogLine = serde_json::from_str(raw).expect("parses");
+        assert_eq!(l.markers(), "");
     }
 
     #[test]

@@ -103,6 +103,7 @@ describe('renderTop', () => {
           line({ failedOver: 'kimi', retryAfterMs: 2000 }),
           line({ cooldown: 'kimi', status: 529 }),
           line({ dialect: ['stripThinkTags'], streamError: 'overloaded_error' }),
+          line({ editHint: true }),
         ],
       },
       NOW,
@@ -113,6 +114,10 @@ describe('renderTop', () => {
     expect(out).toContain('cooldown:kimi');
     expect(out).toContain('dialect:stripThinkTags');
     expect(out).toContain('streamError:overloaded_error');
+    // §5quater: a hint that fired is a routing event like the others. The Rust
+    // sidecar prints the same word (tui/src/logtail.rs), because one log line
+    // must read the same whichever front end is watching.
+    expect(out).toContain('editHint');
   });
 });
 

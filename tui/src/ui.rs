@@ -827,6 +827,9 @@ mod tests {
             routed: None,
             failed_over: None,
             cooldown: None,
+            retry_after_ms: None,
+            dialect: None,
+            edit_hint: None,
             stream_error: None,
         };
         let snap = Snapshot {
