@@ -51,8 +51,21 @@ export async function doctorCommand(args: string[]): Promise<number> {
     date: new Date().toISOString().slice(0, 10),
   };
   const submitUrl = submit ? submissionUrl(submission) : undefined;
+  // `quirks` is configuration, not measurement, which is why it lives on the
+  // profile and not in the run result. It is copied into the payload anyway:
+  // a consumer reading only this JSON cannot otherwise tell that the score was
+  // earned under a quirk that changed the request. Always present, like
+  // `dialects`, so the shape does not depend on the profile.
   const jsonPayload = (): string =>
-    JSON.stringify(submitUrl === undefined ? result : { ...result, submitUrl }, null, 2);
+    JSON.stringify(
+      {
+        ...result,
+        quirks: profile.quirks ?? [],
+        ...(submitUrl !== undefined ? { submitUrl } : {}),
+      },
+      null,
+      2,
+    );
   const printSubmission = (): void => {
     if (submitUrl === undefined) return;
     console.log('\nSubmission (public scoreboard): a pre-filled GitHub issue, nothing is uploaded.');

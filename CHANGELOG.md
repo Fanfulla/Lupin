@@ -19,7 +19,9 @@ evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
   every run and an alarm that always fires stops being read. It is printed
   because some request quirks (`noParallelToolCalls`, `singleSystemMessage`,
   `identityHint`) change what the model was asked, so a score earned under them
-  is not comparable with a bare one.
+  is not comparable with a bare one. `--json` carries the same information as a
+  `quirks` array next to `dialects`, always present, so a machine consumer of
+  the payload alone can tell the two apart without reading the config.
 
 ### Fixed
 
