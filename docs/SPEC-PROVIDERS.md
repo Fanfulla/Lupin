@@ -267,6 +267,26 @@ Two accounts of the same provider (a personal plan and a work plan, two subscrip
 - **Rotation is the chain that already exists.** Two accounts are two profiles, so `failover` (§4ter, per request) and the quota-aware durable switch (§4octies, over time) already move traffic from one to the next, in the order the user set from the TUI (ADR-34). No round-robin loop is added: ADR-34 rejected a cyclic chain on purpose, because when every account is spent a loop ping-pongs forever instead of surfacing the exhaustion.
 - **Where it shows**: the account is part of the profile name, so every surface that already names the profile (`lupin list`, `/health`, the statusline, the TUI, the log) names the account too, with no new field anywhere.
 
+### 4decies. Agent routes: per-subagent model and provider control (2026-08-09, ADR-47)
+
+Requested twice in the 0.2.0 launch thread (per-subagent model control, "mix sub agents with total control") and parked since ADR-25 ("subagent routing, deferred to M5"). The wire facts that shape it, verified 2026-08-09 against the official sub-agents documentation and the client issue tracker:
+
+1. **No request marker identifies a subagent.** No header, no `metadata`, nothing in the body; the feature request for such headers (anthropics/claude-code#12430) is closed "not planned". The one channel the client carries reliably is the `model` field.
+2. **Subagent model resolution order** (docs, v2.1.211+): `CLAUDE_CODE_SUBAGENT_MODEL`, then the Agent tool `model` parameter, then the agent's frontmatter `model:`, then inherit. The frontmatter field accepts a full model id and the resolved id travels verbatim.
+3. **The env var overrides frontmatter**: setting it routes EVERY subagent, so the blanket route and per-agent frontmatter routing are mutually exclusive client-side. Documented wherever the feature is offered, never discovered by surprise.
+
+So the design is id algebra in the namespace Lupin already owns (§4.2), zero content inspection:
+
+- **The id shape `claude-lupin-agent:<name>`** (sentinel `agent:` next to §4.3's `switch:`). The user puts it where the client already accepts a model id: frontmatter `model:`, the Agent tool `model` parameter, or `CLAUDE_CODE_SUBAGENT_MODEL`.
+- **A global `agents` table in the config**, top level next to `profiles`: `"agents": {"<name>": <slot target>}`. The target has the exact slot-target shape (§3): a model string (a model of the profile serving the request, normally the active one) or `{"profile": "x"}`, which lands on x's **sonnet** slot, since an agent id names no tier. Names are `[A-Za-z0-9._-]{1,32}` (a `:` would break the sentinel, a space the frontmatter value; same charset as §4nonies account labels).
+- **Resolution**: after `normalizeModelId` (so `[1m]` and the gateway prefix strip first), an `agent:` id looks up the table. A match resolves to the target and **bypasses content routes (§4quater)**: total control means the request goes exactly where aimed, like direct use. An unknown name serves the request on the normal path (no `opus`/`haiku` substring, so the sonnet slot) and logs `agentRoute: "unknown:<name>"`: serve, never break (the §4.3 rule).
+- **The blanket route is a convention, not a mechanism**: the reserved-by-convention name `subagents`. When `config.agents.subagents` exists and the user has not set `CLAUDE_CODE_SUBAGENT_MODEL` (an explicit value always wins, empty included), `lupin run` fills it with `claude-lupin-agent:subagents`. Same launch-env pattern and same honest limit as ADR-35: the env var is read at launch, the table is hot-reloaded, so where `subagents` points can change mid-session from any surface.
+- **Visible, never silent**: the request line carries `agentRoute: "<name>"`; `lupin top` and the TUI print `agent:<name>`.
+- **Not published in `/v1/models`**: agent ids are typed into agent definitions, not picked from a picker; an inert row with no gesture behind it would be noise. (The switch rows exist because the picker IS their surface.)
+- **Opt-in end to end**: an absent table changes zero behaviour (ADR-7, ADR-25); the env var is filled only when the user declared the `subagents` route.
+- **Failover interplay, said honestly**: a string target re-resolves against the failover profile like any slot string; a `{"profile"}` target is absolute, so the §4ter hop retries the same place once and the log shows it. Same limit slot delegation already has.
+- Surfaces: `lupin agents` (SPEC-CLI §1), `POST /v1/lupin/agents` (whole table, atomic, the ADR-34 argument), and the TUI agents mode (docs/TUI.md).
+
 ### 4septies. `init` offers routes and failover, the user decides (2026-07-20)
 
 Routes (§4quater) and failover (§4ter) stay **opt-in and declarative**: Lupin never activates routing silently (ADR-7, confirmed by the user on 2026-07-20: "never auto-activate"). But discovery (§3ter) and the registry already know the data that makes a route sensible, so `lupin init` **offers** what it can infer and the user explicitly accepts or refuses:

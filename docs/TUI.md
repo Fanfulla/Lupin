@@ -98,6 +98,7 @@ Each recent request can carry the routing truth inline, exactly like `lupin logs
 | `failover<-<profile>` | the request failed over FROM that profile |
 | `cooldown:<profile>` | a profile was skipped because it is in cooldown |
 | `streamError:<type>` | an SSE stream returned HTTP 200 but carried an `event: error` (ADR-24) |
+| `agent:<name>` | an agent route served this request (SPEC-PROVIDERS §4decies); `agent:unknown:<name>` means the id named a route the config does not have, served on the normal path |
 
 ## Keys
 
@@ -109,10 +110,19 @@ Each recent request can carry the routing truth inline, exactly like `lupin logs
 | `Enter` | switch the active profile to the row under the cursor |
 | `r` | refresh now, without waiting for the next tick |
 | `o` | order mode: type the profile numbers in the order automatic switches should follow (previewed by name in the status line), `Enter` applies, `Esc` cancels |
+| `a` | agents mode: aim the per-subagent routes (SPEC-PROVIDERS §4decies). `↑`/`↓` pick a route, `1`-`9` aim it at that profile, `x` clears it, `Enter` applies, `Esc` cancels |
 
 The `1`-`9` hotkeys act immediately; the cursor path is two-step on purpose, so
 scrolling the list never fires a switch by accident. The cursor stays on a real
 row: when the profile list shrinks it clamps back into range.
+
+Agents mode (ADR-47) edits the `agents` table through one atomic control call
+(`POST /v1/lupin/agents`): the rows are the configured agent routes, with the
+conventional `subagents` row always shown (even when unset) so the first-use
+gesture exists on screen. `1`-`9` on a row writes the delegation to that
+profile, `x` clears the row, `Enter` applies the whole table at once, `Esc`
+throws the edit away. Model-string targets and new route names are CLI gestures
+(`lupin agents set`), and the status line says so when a key cannot do it.
 
 Order mode (ADR-34) edits the failover chain through one atomic control call
 (`POST /v1/lupin/switch-order`): each named profile fails over to the next, the

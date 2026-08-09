@@ -16,9 +16,21 @@ Switches the active profile by writing the config; the server, when running, hot
 
 **Unknown options are refused.** `use` used to ignore anything it did not recognise, so a typo, or the flag above before it existed, switched the profile, did nothing else, and reported success. Every flag now has to be one of the five, with a value, and there can be exactly one positional argument.
 
+### `lupin agents [set <name> (--profile <p> | --model <m>) | unset <name>]` (2026-08-09, ADR-47, SPEC-PROVIDERS §4decies)
+
+Per-subagent routing, the "mix subagents" control surface:
+
+- **`lupin agents`** lists the table: one row per configured agent route with its target, plus, for each name, the exact id to paste (`claude-lupin-agent:<name>`) and where it goes (an agent's frontmatter `model:`, the Agent tool `model` parameter, or `CLAUDE_CODE_SUBAGENT_MODEL`). The listing states the client-side precedence rule out loud: `CLAUDE_CODE_SUBAGENT_MODEL` overrides frontmatter, so the blanket `subagents` route and per-agent frontmatter routing do not compose client-side.
+- **`lupin agents set <name> --profile <p>`** writes the delegation `{"profile": p}` (the profile must exist); **`--model <m>`** writes the model string as given and never checked, same rule and same on-screen notice as `use --opus`. Exactly one of the two flags, unknown flags refused (the ADR-42 lesson).
+- **`lupin agents unset <name>`** removes the route.
+- Names are validated `[A-Za-z0-9._-]{1,32}` and refused otherwise, never sanitized (the §4nonies argument).
+- Same write path as `use`: load, mutate, save; the daemon hot-reloads. No restart anywhere.
+
 ### `lupin run -- <command>` (typically `lupin run -- claude`)
 1. Starts the server if it is not running (daemon with a pidfile in `~/.lupin/`).
 2. Exports into the child process environment: `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`, `ANTHROPIC_AUTH_TOKEN=<localToken>`, `ANTHROPIC_API_KEY=` (empty, to avoid conflicts), `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` (only when the user has not set it already: an explicit value always wins, opt-out included).
+
+   When the config declares the `subagents` agent route (SPEC-PROVIDERS §4decies) and the user has not set `CLAUDE_CODE_SUBAGENT_MODEL` (an explicit value always wins, empty included), `lupin run` also fills `CLAUDE_CODE_SUBAGENT_MODEL=claude-lupin-agent:subagents`, so every subagent request arrives on an id the proxy can aim. Launch-env limit, same as ADR-35: the variable is read at launch, but the TABLE is hot-reloaded, so where the route points can change mid-session.
 
    That fourth variable is what makes the model picker exist: discovery is opt-in client-side and without it Claude Code never calls `GET /v1/models` (SPEC-PROVIDERS §4.2, verified on the client binary 2.1.219 on 2026-07-24). Client-side conditions, from the same verification: `ANTHROPIC_BASE_URL` set and different from `api.anthropic.com`, none of the `CLAUDE_CODE_USE_*` variables (Bedrock/Vertex/Foundry and friends) active, a credential present (`ANTHROPIC_AUTH_TOKEN` as Bearer, otherwise the key as `x-api-key`). **`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` disables discovery**: whoever sets it gives up the picker, and that is not a Lupin bug.
 3. Runs the command; the WHOLE process tree inherits the env, so hooks, plugins (claude-mem) and SDK subagents go through Lupin too (DESIGN §7 requirement). That is why `lupin run` exists instead of telling the user to set the variables by hand.
