@@ -285,7 +285,7 @@ So the design is id algebra in the namespace Lupin already owns (§4.2), zero co
 - **Not published in `/v1/models`**: agent ids are typed into agent definitions, not picked from a picker; an inert row with no gesture behind it would be noise. (The switch rows exist because the picker IS their surface.)
 - **Opt-in end to end**: an absent table changes zero behaviour (ADR-7, ADR-25); the env var is filled only when the user declared the `subagents` route.
 - **Failover interplay, said honestly**: a string target re-resolves against the failover profile like any slot string; a `{"profile"}` target is absolute, so the §4ter hop retries the same place once and the log shows it. Same limit slot delegation already has.
-- Surfaces: `lupin agents` (SPEC-CLI §1), `POST /v1/lupin/agents` (whole table, atomic, the ADR-34 argument), and the TUI agents mode (docs/TUI.md).
+- Surfaces: `lupin agents` (SPEC-CLI §1; `--wire` writes the frontmatter line for you, ADR-48), `POST /v1/lupin/agents` (whole table, atomic, the ADR-34 argument), and the TUI agents mode (docs/TUI.md).
 
 ### 4septies. `init` offers routes and failover, the user decides (2026-07-20)
 

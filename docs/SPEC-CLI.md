@@ -26,6 +26,8 @@ Per-subagent routing, the "mix subagents" control surface:
 - Names are validated `[A-Za-z0-9._-]{1,32}` and refused otherwise, never sanitized (the §4nonies argument).
 - Same write path as `use`: load, mutate, save; the daemon hot-reloads. No restart anywhere.
 
+**`--wire` (2026-08-09, ADR-48): Lupin writes the frontmatter line for you.** `set <name> ... --wire` finds the agent definition (`.claude/agents/*.md` in the current project first, then in the user home; matched on the frontmatter `name:` field, falling back to the filename) and sets its `model:` to `claude-lupin-agent:<name>`; `unset <name> --wire` sets it back to `inherit`, the documented client default. This is the ONE place Lupin writes into the user's harness, and it is bounded on purpose: only on the explicit flag, only that one field, old value printed next to the new one, everything else in the file byte-identical, and a file with no frontmatter block is refused rather than restructured. Built-in agents (Explore, Plan, general-purpose) have no definition file, so `--wire` cannot reach them and says so: for those the blanket `subagents` route is the lever. When the file is not found the route is STILL saved (the config write happened first and stays useful); the command prints where it looked, prints the line to paste by hand, and exits 1 so a script can tell.
+
 ### `lupin run -- <command>` (typically `lupin run -- claude`)
 1. Starts the server if it is not running (daemon with a pidfile in `~/.lupin/`).
 2. Exports into the child process environment: `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`, `ANTHROPIC_AUTH_TOKEN=<localToken>`, `ANTHROPIC_API_KEY=` (empty, to avoid conflicts), `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` (only when the user has not set it already: an explicit value always wins, opt-out included).
@@ -41,6 +43,16 @@ OAuth login for subscription providers (first one: Kimi Code, RFC 8628 device fl
 
 ### `lupin doctor [<profile>] [--json] [--submit]`
 The most important command (see §3). `--submit` generates the pre-filled scoreboard issue (§3.3): no upload, the user sees what is being published first.
+
+### `lupin update` (2026-08-09, ADR-49)
+
+One command from "there is a newer Lupin" to "everything on this machine runs it", sidecar included:
+
+1. **The check**: `GET https://registry.npmjs.org/lupin-code/latest`, compared with the running version. This is the ONLY network call Lupin ever makes that is not the user's own traffic, and it happens exclusively when this command is invoked: no startup check, no phone-home, consistent with the no-telemetry rule (§4.3). Already latest means saying so and exiting 0.
+2. **The package**: `npm i -g lupin-code@latest`, spawned with inherited stdio so npm's own output (progress, permission errors) reaches the user unfiltered.
+3. **The sidecar, rebuilt to match**: the tarball ships the TUI sources (`tui/`), so when a `lupin-tui` is already on the PATH and a Rust toolchain exists, the command rebuilds it from the just-installed package (`CARGO_TARGET_DIR` under the system temp dir, so `node_modules` stays clean and the cache survives across updates) and copies the binary over the one on the PATH only on build success. No sidecar on the PATH means no offer (the user never opted into it); no cargo means the manual command is printed instead of a failure. A copy refused because the TUI is running says to close it and rerun.
+
+Every step reports its outcome in words; a failed step never claims the ones after it. The decision of what to do is a pure, tested function of the observed state (versions, sidecar presence, toolchain presence); the executor only carries it out.
 
 ### `lupin list`
 A table: profiles, provider, mode, model per slot, last doctor score with its date, active profile highlighted.
@@ -136,7 +148,7 @@ The public scoreboard generated from the submissions stays M5: `--submit` is its
 
 **Publication readiness, checked 2026-07-25** (`npm publish --dry-run`):
 
-- The tarball is 45 files, around 87 kB: `dist/`, `fixtures/mcp-echo`, `examples/`, plus the README and the LICENSE that npm always includes. No sources, no tests, no internal docs.
+- The tarball is `dist/`, `fixtures/mcp-echo`, `examples/`, plus the README and the LICENSE that npm always includes. No Node sources, no tests, no internal docs. Since 0.2.2 it also ships the **TUI sources** (`tui/` without its build artifacts): they are what lets `lupin update` rebuild an installed sidecar to the matching version (ADR-49). They are sources to build FROM, never code the Node runtime loads: ADR-27's "no native dependency" holds unchanged.
 - `prepack` runs the build, so the published `dist/` can never lag behind the sources.
 - `dist/cli.js` keeps its `#!/usr/bin/env node` shebang, which is what makes the `lupin` bin executable after a global install.
 - `repository`, `homepage`, `bugs` and `keywords` are set: without `repository` the relative links in the README break on the npm page, and the package has no repo link at all.
