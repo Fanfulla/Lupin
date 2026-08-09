@@ -19,6 +19,7 @@ Common:
                              Per-subagent routes: aim each agent type at its own
                              model or provider (mix subagents, hot reload)
   run -- <command>           Start server if needed, run command with env pointed at Lupin
+  update                     Update the npm package and rebuild the TUI sidecar if you have one
   top                        Live console: profiles, resolved slots, health, recent requests
 
 Inspect:
@@ -69,6 +70,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import('./cli/agents.js')).agentsCommand(rest);
     case 'run':
       return (await import('./cli/run.js')).runCommand(rest);
+    case 'update':
+      return await (await import('./cli/update.js')).updateCommand();
     case 'list':
     case 'ls':
       return (await import('./cli/list.js')).listCommand();
