@@ -40,8 +40,32 @@ describe('version comparison', () => {
 
 describe('planUpdate (ADR-49)', () => {
   it('latest or newer than the registry means nothing to do', () => {
-    expect(planUpdate({ current: '0.2.1', latest: '0.2.1', cargoAvailable: true })).toEqual({ kind: 'upToDate' });
-    expect(planUpdate({ current: '0.3.0', latest: '0.2.1', cargoAvailable: true })).toEqual({ kind: 'upToDate' });
+    const idle = { kind: 'upToDate', rebuildSidecar: false, sidecarHint: false };
+    expect(planUpdate({ current: '0.2.1', latest: '0.2.1', cargoAvailable: true })).toEqual(idle);
+    expect(planUpdate({ current: '0.3.0', latest: '0.2.1', cargoAvailable: true })).toEqual(idle);
+  });
+
+  it('a stale sidecar is rebuilt even when the package is already latest', () => {
+    // The bootstrap case: `npm i -g` from a version predating `lupin update`
+    // leaves the sidecar behind, and the next `lupin update` must fix it.
+    const base = { current: '0.2.2', latest: '0.2.2', sidecarPath: '/bin/lupin-tui' };
+    expect(planUpdate({ ...base, sidecarVersion: '0.1.1', cargoAvailable: true })).toEqual({
+      kind: 'upToDate',
+      rebuildSidecar: true,
+      sidecarHint: false,
+    });
+    expect(planUpdate({ ...base, sidecarVersion: '0.1.1', cargoAvailable: false })).toEqual({
+      kind: 'upToDate',
+      rebuildSidecar: false,
+      sidecarHint: true,
+    });
+    // A matching sidecar, or one whose version cannot be read, is left alone:
+    // a guess could rebuild a healthy binary forever.
+    expect(planUpdate({ ...base, sidecarVersion: '0.2.2', cargoAvailable: true })).toMatchObject({
+      rebuildSidecar: false,
+      sidecarHint: false,
+    });
+    expect(planUpdate({ ...base, cargoAvailable: true })).toMatchObject({ rebuildSidecar: false });
   });
 
   it('an unparsable version decides nothing rather than guessing', () => {

@@ -7,6 +7,18 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
+## [0.2.3] - 2026-08-09
+
+### Fixed
+
+- **`lupin update` also fixes a stale sidecar when the package is already
+  latest.** Found on the first real machine to need it: `npm i -g` from a
+  version predating `lupin update` leaves the sidecar behind, and 0.2.2's
+  command would then say "already the latest" and exit without touching it.
+  Now a sidecar whose `--version` is known and different from the package gets
+  rebuilt on that path too; one whose version cannot be read is left alone,
+  because a guess could rebuild a healthy binary forever.
+
 ## [0.2.2] - 2026-08-09
 
 ### Added
