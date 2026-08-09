@@ -52,7 +52,9 @@ What cannot be automated is a real keyboard in a real terminal. That is a short 
 4. `q` must leave the terminal usable: no leftover raw mode, no swallowed cursor.
 5. Resize the window narrow and short: nothing may panic (the cramped-layout case is pinned by a test, this confirms it on a real terminal).
 
-Record the date of the last manual pass here when it is done. As of 2026-07-29 it has never been run.
+Record the date of the last manual pass here when it is done. As of 2026-07-29 it had never been run.
+
+**Last driven pass: 2026-08-09**, on WSL through tmux `send-keys` (real terminal emulation, not a human hand, said for honesty). Covered against a live sandboxed daemon: the header showing `daemon DOWN` and then `daemon up` (steps 2), `2` switching the active profile with the config write observed on disk (step 3), `q` ending the session cleanly (step 4), and the whole agents mode (ADR-47): open with `a`, the unset `subagents` row on screen, `2` aiming it with the talking-line preview, Enter applying through the control API and the daemon writing `agents.subagents` to disk, Esc leaving the config untouched, `x` plus Enter removing the key, and a real request routed through the table (`ollama/l-mid`, `agentRoute` in the log line) rendering as `agent:subagents` in the request tail.
 
 ## 4. What NOT to test
 

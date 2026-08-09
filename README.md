@@ -220,7 +220,17 @@ lupin-tui    # or run it directly
 
 Keys: `1`-`9` switch profile, arrows and `Enter` do the same on the highlighted
 row, **`d` runs the doctor on the highlighted profile**, **`:` opens the command
-palette**, `o` edits the failover order, `r` refreshes now, `q` quits.
+palette**, `o` edits the failover order, **`a` opens agents mode**, `r`
+refreshes now, `q` quits.
+
+Agents mode is the subagent mixer on screen: it lists every agent route plus
+the conventional `subagents` row (shown even before it exists, so the first
+gesture is obvious), and on the selected row `1`-`9` aims it at that profile,
+`x` clears it, `Enter` applies the whole table atomically through the control
+API, `Esc` throws the edit away. The daemon writes the config and hot-reloads
+it, so a live Claude Code session picks the new routing up on its next request.
+Model-string targets and brand-new route names are one command away in
+`lupin agents set`, and the overlay says so rather than hiding the limit.
 
 The doctor takes minutes, so it runs as a child process and its output streams
 into a panel while the dashboard keeps refreshing underneath. The palette lists
@@ -239,7 +249,7 @@ screen, so it will not do anything useful inside another tool's output pane.
 ⠀⠀⠈⠛⢿⠿⣿⣿⣿⣿⣿⣶⣶⣶⣤⣄
 ```
 
-Profiles with 1-9 hotkeys, the routing truth per slot, the request tail with every marker (`routed`, `failedOver`, `tierDowngrade`, `dialect`), and a status line that says in words what just happened. `lupin top` gives the same truths with no sidecar at all. Details in [docs/TUI.md](docs/TUI.md).
+Profiles with 1-9 hotkeys, the routing truth per slot, the request tail with every marker (`routed`, `agent`, `failedOver`, `tierDowngrade`, `dialect`), and a status line that says in words what just happened. `lupin top` gives the same truths with no sidecar at all. Details in [docs/TUI.md](docs/TUI.md).
 
 There is also a **statusline** for Claude Code itself, because through a proxy the model introduces itself as the Claude of the system prompt (the UI knows nothing about the mapping, ADR-3), so asking it who it is proves nothing. The truth lives in `GET /health`, and the statusline shows it as `⇄ profile→model`.
 
