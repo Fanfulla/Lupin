@@ -100,6 +100,7 @@ describe('renderTop', () => {
         config: config(),
         recent: [
           line({ routed: 'longContext' }),
+          line({ agentRoute: 'explore' }),
           line({ failedOver: 'kimi', retryAfterMs: 2000 }),
           line({ cooldown: 'kimi', status: 529 }),
           line({ dialect: ['stripThinkTags'], streamError: 'overloaded_error' }),
@@ -109,6 +110,7 @@ describe('renderTop', () => {
       NOW,
     ).join('\n');
     expect(out).toContain('routed:longContext');
+    expect(out).toContain('agent:explore');
     expect(out).toContain('failover<-kimi');
     expect(out).toContain('waited:2000ms');
     expect(out).toContain('cooldown:kimi');

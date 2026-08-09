@@ -147,6 +147,41 @@ export function registerControlRoutes(app: Hono, localToken: string, deps: Contr
     }
   });
 
+  // Agent routes (SPEC-PROVIDERS §4decies, ADR-47): the whole table at once,
+  // like switch-order (ADR-34): no partial edit can survive a mid-write
+  // failure. An empty table removes the key: an absent table is the documented
+  // "feature off" state, and a lingering {} would read as something else.
+  app.post('/v1/lupin/agents', async (c) => {
+    const denied = guard(c);
+    if (denied !== undefined) return denied;
+    let body: { agents?: unknown };
+    try {
+      body = (await c.req.json()) as { agents?: unknown };
+    } catch {
+      return c.json({ ok: false, error: 'expected a JSON body { agents: { name: target… } }' }, 400);
+    }
+    const agents = body.agents;
+    if (agents === null || typeof agents !== 'object' || Array.isArray(agents)) {
+      return c.json({ ok: false, error: 'expected { agents: { name: target… } }' }, 400);
+    }
+    try {
+      const config = loadConfig();
+      const table = agents as Record<string, string | { profile: string }>;
+      if (Object.keys(table).length === 0) delete config.agents;
+      else config.agents = table;
+      try {
+        saveConfig(config);
+      } catch (e) {
+        // saveConfig validates first: a bad name or target is the caller's
+        // mistake, not a server failure.
+        return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+      return c.json({ ok: true, agents: config.agents ?? {} });
+    } catch (e) {
+      return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  });
+
   // Start an OAuth login as a job. The job's message carries the URL/code.
   app.post('/v1/lupin/login', async (c) => {
     const denied = guard(c);

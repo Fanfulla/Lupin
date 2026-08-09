@@ -15,6 +15,9 @@ Common:
   use <profile> [--bg <p>|none] [--opus|--sonnet|--haiku <model>]
                              Switch active profile (hot reload, no Claude Code restart)
                              and aim its slots at specific models
+  agents [set <name> --profile <p>|--model <m>] [unset <name>]
+                             Per-subagent routes: aim each agent type at its own
+                             model or provider (mix subagents, hot reload)
   run -- <command>           Start server if needed, run command with env pointed at Lupin
   top                        Live console: profiles, resolved slots, health, recent requests
 
@@ -62,6 +65,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import('./cli/login.js')).logoutCommand(rest);
     case 'use':
       return (await import('./cli/use.js')).useCommand(rest);
+    case 'agents':
+      return (await import('./cli/agents.js')).agentsCommand(rest);
     case 'run':
       return (await import('./cli/run.js')).runCommand(rest);
     case 'list':

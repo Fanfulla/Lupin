@@ -61,7 +61,7 @@ export interface CodeAssistForwardArgs {
   fetchImpl: typeof fetch;
   timeoutMs: number;
   pingIntervalMs?: number;
-  /** The slot this request resolved to ('opus' | 'sonnet' | 'haiku' | 'direct'). */
+  /** The slot this request resolved to ('opus' | 'sonnet' | 'haiku' | 'direct' | 'agent'). */
   slot?: string;
   /** Profile name, so a discovered free tier can be reported to every surface. */
   profileName?: string;

@@ -9,7 +9,8 @@ export interface ResolvedTarget {
   profileName: string;
   profile: ProfileConfig;
   model: string;
-  slot: SlotName | 'direct';
+  /** 'agent' = an agent route served this request (§4decies): like 'direct', it is never content-rerouted. */
+  slot: SlotName | 'direct' | 'agent';
 }
 
 const MAX_DELEGATION_DEPTH = 3;
@@ -47,6 +48,27 @@ export function profileSwitchTarget(requestedModel: string): string | undefined 
   const id = normalizeModelId(requestedModel);
   if (!id.startsWith(SWITCH_SENTINEL)) return undefined;
   const name = id.slice(SWITCH_SENTINEL.length);
+  return name === '' ? undefined : name;
+}
+
+/**
+ * Sentinel of the agent-route ids (§4decies, ADR-47), next to `switch:` in the
+ * same namespace. The id is TYPED into an agent's frontmatter `model:`, the
+ * Agent tool `model` parameter or CLAUDE_CODE_SUBAGENT_MODEL, never published
+ * in /v1/models: its surface is the agent definition, not the picker.
+ */
+const AGENT_SENTINEL = 'agent:';
+
+/** The id an agent definition carries to be routed by the `agents` table. */
+export function agentRouteId(name: string): string {
+  return `${GATEWAY_MODEL_PREFIX}${AGENT_SENTINEL}${name}`;
+}
+
+/** The agent route an id names, or undefined for an ordinary model id. */
+export function agentRouteName(requestedModel: string): string | undefined {
+  const id = normalizeModelId(requestedModel);
+  if (!id.startsWith(AGENT_SENTINEL)) return undefined;
+  const name = id.slice(AGENT_SENTINEL.length);
   return name === '' ? undefined : name;
 }
 
@@ -123,8 +145,9 @@ export function routeForContent(
 
 /**
  * Applies the start profile's routes to an already-resolved target.
- * Direct-use (model picker) is never rerouted. Returns the routed target and
- * which route fired, or the input unchanged.
+ * Direct-use (model picker) and agent routes (§4decies: total control means
+ * the request goes exactly where aimed) are never rerouted. Returns the routed
+ * target and which route fired, or the input unchanged.
  */
 export function applyContentRoutes(
   config: LupinConfig,
@@ -133,7 +156,7 @@ export function applyContentRoutes(
   resolved: ResolvedTarget,
   body: Record<string, unknown>,
 ): { resolved: ResolvedTarget; routed?: RouteKind } {
-  if (resolved.slot === 'direct') return { resolved };
+  if (resolved.slot === 'direct' || resolved.slot === 'agent') return { resolved };
   const startProfile = config.profiles[startName];
   if (startProfile === undefined) return { resolved };
   const resolvedWindow =
@@ -161,6 +184,23 @@ export function resolveRequest(
 
   const requested = normalizeModelId(requestedModel);
 
+  // Agent routes (§4decies, ADR-47): the table is the only detector the wire
+  // allows, so a match wins over everything. An unknown name falls through to
+  // the normal path (no opus/haiku substring → the sonnet slot): serve, never
+  // break, same rule as the unknown switch row (§4.3).
+  const agentName = agentRouteName(requested);
+  if (agentName !== undefined) {
+    const target = config.agents?.[agentName];
+    if (typeof target === 'string') {
+      return { profileName: startName, profile: start, model: target, slot: 'agent' };
+    }
+    if (target !== undefined) {
+      // An agent id names no tier: the delegation lands on the target
+      // profile's sonnet slot, the daily driver.
+      return { ...walkSlot(config, target.profile, 'sonnet'), slot: 'agent' };
+    }
+  }
+
   // Direct use: model picker sends real model names (SPEC-PROVIDERS §4 case 2).
   for (const target of Object.values(start.slots)) {
     if (typeof target === 'string' && target === requested) {
@@ -168,9 +208,14 @@ export function resolveRequest(
     }
   }
 
-  const slot = slotForModel(requested);
+  return walkSlot(config, startName, slotForModel(requested));
+}
+
+/** The slot delegation walk of SPEC-PROVIDERS §3, bounded against cycles. */
+function walkSlot(config: LupinConfig, startName: string, slot: SlotName): ResolvedTarget {
   let name = startName;
-  let profile = start;
+  let profile = config.profiles[name];
+  if (profile === undefined) throw new Error(`profile "${name}" not found in config`);
   for (let depth = 0; depth <= MAX_DELEGATION_DEPTH; depth++) {
     const target = profile.slots[slot];
     if (typeof target === 'string') {

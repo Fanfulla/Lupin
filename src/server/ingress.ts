@@ -3,7 +3,7 @@ import type { Context } from 'hono';
 import { loadConfig, saveConfig, type LupinConfig } from '../config/config.js';
 import { PROVIDERS } from '../providers/registry.js';
 import { quotaExhausted } from '../providers/quota.js';
-import { applyContentRoutes, gatewayModelId, profileSwitchId, profileSwitchTarget, resolveRequest } from '../providers/resolve.js';
+import { agentRouteName, applyContentRoutes, gatewayModelId, profileSwitchId, profileSwitchTarget, resolveRequest } from '../providers/resolve.js';
 import { isFreeTier, labelModel, upgradeUrl } from '../providers/tiers.js';
 import {
   networkError,
@@ -186,6 +186,9 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
     let quotaSwitch: string | undefined = undefined;
     // §4.3: the switch the user asked for from the model picker.
     let profileSwitch: string | undefined = undefined;
+    // §4decies: the agent route the id named. "unknown:<name>" when the table
+    // has no such route and the request was served on the normal path.
+    let agentRoute: string | undefined = undefined;
     // Provider diagnostics on a failed request (§4octies): already scrubbed
     // and capped by the normalizer, truncated further for the log.
     let errorMessage: string | undefined = undefined;
@@ -213,6 +216,7 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
         ...(tierDowngrade !== undefined ? { tierDowngrade } : {}),
         ...(quotaSwitch !== undefined ? { quotaSwitch } : {}),
         ...(profileSwitch !== undefined ? { profileSwitch } : {}),
+        ...(agentRoute !== undefined ? { agentRoute } : {}),
         ...(errorMessage !== undefined ? { errorMessage } : {}),
       });
     };
@@ -317,6 +321,14 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
         lastSwitchTarget = switchTarget;
       }
       resolveModelId = 'opus';
+    }
+
+    // §4decies (ADR-47): the log must say when an agent route served the
+    // request, and when the id named a route the table does not have (served on
+    // the normal path instead). Resolution itself happens in resolveRequest.
+    const agentName = agentRouteName(requestedModel);
+    if (agentName !== undefined) {
+      agentRoute = config.agents?.[agentName] !== undefined ? agentName : `unknown:${agentName}`;
     }
 
     const credentialOpts = {

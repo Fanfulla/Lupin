@@ -61,7 +61,21 @@ export interface LupinConfig {
   port: number;
   localToken: string;
   profiles: Record<string, ProfileConfig>;
+  /**
+   * Agent routes (SPEC-PROVIDERS §4decies, ADR-47): the id
+   * `claude-lupin-agent:<name>` resolves through this table. Global, not per
+   * profile: the routing describes the harness, not a provider. A string
+   * target is a model of the profile serving the request; a delegation lands
+   * on the target profile's sonnet slot (an agent id names no tier).
+   */
+  agents?: Record<string, SlotTarget>;
 }
+
+/**
+ * Same charset as the §4nonies account labels: a `:` would make the published
+ * id ambiguous, a space would break the frontmatter value that carries it.
+ */
+export const AGENT_NAME_RE = /^[A-Za-z0-9._-]{1,32}$/;
 
 export function defaultConfigPath(): string {
   // LUPIN_DIR must move the WHOLE home, config included: honoring it only for
@@ -119,7 +133,30 @@ export function validateConfig(value: unknown): LupinConfig {
   if (!(c['activeProfile'] in profiles)) {
     throw new Error(`config: activeProfile "${c['activeProfile']}" is not defined in profiles`);
   }
+  validateAgents(c['agents'], profiles);
   return value as LupinConfig;
+}
+
+/** Agent routes (§4decies): names on the sentinel charset, slot-shaped targets. */
+function validateAgents(value: unknown, profiles: Record<string, unknown>): void {
+  if (value === undefined) return;
+  const where = 'config: "agents"';
+  if (value === null || typeof value !== 'object') throw new Error(`${where} must be an object`);
+  for (const [name, target] of Object.entries(value as Record<string, unknown>)) {
+    if (!AGENT_NAME_RE.test(name)) {
+      throw new Error(`${where}: "${name}" is not a valid agent name (allowed: A-Z a-z 0-9 . _ -, max 32)`);
+    }
+    const isModel = typeof target === 'string' && target !== '';
+    const isDelegation =
+      target !== null && typeof target === 'object' && typeof (target as Record<string, unknown>)['profile'] === 'string';
+    if (!isModel && !isDelegation) {
+      throw new Error(`${where}.${name}: target must be a model name or {"profile": "<name>"}`);
+    }
+    if (isDelegation) {
+      const ref = (target as Record<string, unknown>)['profile'] as string;
+      if (!(ref in profiles)) throw new Error(`${where}.${name}: target profile "${ref}" is not defined`);
+    }
+  }
 }
 
 const ROUTE_KEYS = ['longContext', 'vision', 'thinking'] as const;

@@ -7,7 +7,9 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, extname, join, resolve } from 'node:path';
 import { loadConfig } from '../config/config.js';
+import { agentRouteId } from '../providers/resolve.js';
 import { ensureDaemon } from '../server/daemon.js';
+import { SUBAGENTS_ROUTE } from './agents.js';
 
 /** What `GET /health` says, reduced to what a startup announcement needs. */
 export interface RunHealth {
@@ -91,6 +93,7 @@ export function runEnv(
   localToken: string,
   current: Record<string, string | undefined> = process.env,
   quirks: readonly string[] = [],
+  agentRoutes: Readonly<Record<string, unknown>> = {},
 ): Record<string, string> {
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${String(port)}`,
@@ -112,6 +115,14 @@ export function runEnv(
   // are the launch-time profile's: a switch after launch cannot re-set the env.
   if (quirks.includes('raiseStreamIdleTimeout') && current['CLAUDE_STREAM_IDLE_TIMEOUT_MS'] === undefined) {
     env['CLAUDE_STREAM_IDLE_TIMEOUT_MS'] = '600000';
+  }
+  // Agent routes (§4decies, ADR-47): declaring the conventional `subagents`
+  // route IS the opt-in, so every subagent request arrives on an id the table
+  // can aim. Same fill-in rule as above (an explicit value wins, empty
+  // included) and same launch-time limit as ADR-35: the env var is read at
+  // launch, the table is hot-reloaded.
+  if (agentRoutes[SUBAGENTS_ROUTE] !== undefined && current['CLAUDE_CODE_SUBAGENT_MODEL'] === undefined) {
+    env['CLAUDE_CODE_SUBAGENT_MODEL'] = agentRouteId(SUBAGENTS_ROUTE);
   }
   return env;
 }
@@ -236,7 +247,7 @@ export async function runCommand(args: string[]): Promise<number> {
 
   const child = spawn(resolved.viaShell ? `"${resolved.command}"` : resolved.command, childArgs, {
     stdio: 'inherit',
-    env: { ...process.env, ...runEnv(config.port, config.localToken, process.env, config.profiles[config.activeProfile]?.quirks ?? []) },
+    env: { ...process.env, ...runEnv(config.port, config.localToken, process.env, config.profiles[config.activeProfile]?.quirks ?? [], config.agents ?? {}) },
     shell: resolved.viaShell,
   });
   return await new Promise<number>((resolve) => {

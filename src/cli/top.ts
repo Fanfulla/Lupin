@@ -56,6 +56,7 @@ export function recentRequests(lines: readonly RequestLogLine[], rows = TAIL_ROW
 function markers(line: RequestLogLine): string {
   const parts: string[] = [];
   if (line.routed !== undefined) parts.push(`routed:${line.routed}`);
+  if (line.agentRoute !== undefined) parts.push(`agent:${line.agentRoute}`);
   if (line.failedOver !== undefined) parts.push(`failover<-${line.failedOver}`);
   if (line.cooldown !== undefined) parts.push(`cooldown:${line.cooldown}`);
   if (line.retryAfterMs !== undefined) parts.push(`waited:${String(line.retryAfterMs)}ms`);
