@@ -1,6 +1,6 @@
 {
   "name": "lupin-code",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Local proxy: use Claude Code (MCP, skills, hooks, plugins) with any LLM provider",
   "keywords": [
     "claude-code",

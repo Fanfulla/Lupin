@@ -29,7 +29,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Node >= 20](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)
 ![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178c6)
-![tests](https://img.shields.io/badge/tests-686%20node%20%2B%2037%20rust-success)
+![tests](https://img.shields.io/badge/tests-743%20node%20%2B%2045%20rust-success)
 
 </div>
 
@@ -58,9 +58,25 @@ Switch model with the session open, no restart:
 
 ```bash
 lupin use glm                # you are on GLM-5.2 from the next request
-lupin use gpt --bg kimi      # main on GPT, subagents on Kimi, because subagents are most of the bill
+lupin use gpt --bg kimi      # main on GPT, haiku-tier traffic on Kimi
 lupin go kimi-sub -- claude  # switch and launch, one gesture
 ```
+
+Mix subagents, each agent type on its own model or provider:
+
+```bash
+lupin agents set subagents --profile ollama-qwen   # every subagent on the local model
+lupin agents set explore --profile kimi            # except Explore, on Kimi
+lupin agents                                       # the table, plus the id each agent uses
+```
+
+`lupin agents` prints an id per route (`claude-lupin-agent:<name>`). Put it in
+an agent's frontmatter `model:` (or let `lupin run` wire the blanket
+`subagents` route through `CLAUDE_CODE_SUBAGENT_MODEL` for you) and that agent
+is yours to aim, live, from the CLI, the TUI (`a`) or the control API. There is
+no other honest way: Claude Code sends no header or metadata that identifies a
+subagent, so the model id is the one channel a proxy can route on, and the
+routing stays visible per request in the log (`agent:<name>` in `lupin top`).
 
 Use a subscription instead of an API key:
 
@@ -166,7 +182,7 @@ Claude Code ──ANTHROPIC_BASE_URL──▶ Lupin (127.0.0.1)
 - **Translate** maps requests, responses and SSE streaming, tool calling included, with MCP names longer than 64 characters rewritten through a deterministic hash.
 - **`responses` and `codeassist`** exist because a ChatGPT or Google OAuth token does not spend on those providers' public APIs at all. Each subscription has its own private protocol, so each got its own translator, built from real captured traffic.
 
-Three model slots (opus, sonnet, haiku) map to whatever you point them at, per profile, and `--bg` sends subagents somewhere cheaper than the main model.
+Three model slots (opus, sonnet, haiku) map to whatever you point them at, per profile; `--bg` sends the haiku-tier traffic somewhere cheaper, and the `agents` table (SPEC-PROVIDERS §4decies) routes each subagent type to its own model or provider.
 
 </details>
 
@@ -217,7 +233,7 @@ every fact and shrinks the art. It needs a real terminal: it takes over the
 screen, so it will not do anything useful inside another tool's output pane.
 
 ```
-⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.2.0   the gentleman router
+⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.2.1   the gentleman router
 ⠈⢿⣿⣿⣿⣿⣿⣷⣖⠀⠀⠀⠀⠀⠀⠀  daemon up   127.0.0.1:3456
 ⠀⠴⢿⣿⣿⣿⣿⣿⣿⣀⠀⠀⠀⠀⠀⠀  active: kimi-sub  ->  k3
 ⠀⠀⠈⠛⢿⠿⣿⣿⣿⣿⣿⣶⣶⣶⣤⣄

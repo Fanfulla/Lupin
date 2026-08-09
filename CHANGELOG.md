@@ -7,6 +7,33 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
+## [0.2.1] - 2026-08-09
+
+### Added
+
+- **Agent routes: mix subagents with total control (ADR-47, SPEC-PROVIDERS
+  §4decies).** A global `agents` table in the config maps a name to a model of
+  the serving profile or to another profile, and the id
+  `claude-lupin-agent:<name>` resolves through it. Put the id where Claude Code
+  already accepts a model id (an agent's frontmatter `model:`, the Agent tool
+  `model` parameter, or `CLAUDE_CODE_SUBAGENT_MODEL`) and that agent type runs
+  on the target you aimed, hot-reloaded, without touching the rest of the
+  session. Declare the conventional `subagents` route and `lupin run` fills
+  `CLAUDE_CODE_SUBAGENT_MODEL` for you, so every subagent is routed with zero
+  frontmatter editing (your own value always wins, and the client applies that
+  variable over frontmatter: the blanket route and per-agent ids do not compose
+  client-side). Edit the table with `lupin agents` (list/set/unset), from the
+  TUI (`a` opens agents mode: pick a route, aim it at a profile, Enter applies
+  atomically), or through `POST /v1/lupin/agents`. Requests served by a route
+  log `agentRoute`, printed as `agent:<name>` by `lupin top` and the sidecar;
+  an id naming a route the config does not have is served on the normal path
+  and logged as `agent:unknown:<name>`, never an error. Off unless the table
+  exists; content routes never reroute an agent-routed request; nothing is
+  published in the model picker. This was the launch thread's most asked
+  feature, and the one honest wire fact shaped it: no header or metadata
+  identifies a subagent, so the model id is the only channel a proxy can route
+  on (verified 2026-08-09 against the official docs and issue tracker).
+
 ## [0.2.0]
 
 ### Added
