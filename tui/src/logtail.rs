@@ -23,6 +23,11 @@ pub struct LogLine {
     pub model: String,
     #[serde(default)]
     pub routed: Option<String>,
+    /// Agent route (SPEC-PROVIDERS section 4decies): the route name, or
+    /// `unknown:<name>` when the id named a route the config does not have.
+    #[serde(default)]
+    #[serde(rename = "agentRoute")]
+    pub agent_route: Option<String>,
     #[serde(default)]
     #[serde(rename = "failedOver")]
     pub failed_over: Option<String>,
@@ -83,6 +88,9 @@ impl LogLine {
         let mut parts = Vec::new();
         if let Some(r) = &self.routed {
             parts.push(format!("routed:{r}"));
+        }
+        if let Some(a) = &self.agent_route {
+            parts.push(format!("agent:{a}"));
         }
         if let Some(f) = &self.failed_over {
             parts.push(format!("failover<-{f}"));
@@ -167,11 +175,12 @@ mod tests {
     #[test]
     fn the_markers_name_every_routing_event_that_fired() {
         let raw = r#"{"ts":"t","profile":"p","model":"m","path":"/v1/messages","status":200,
-            "latencyMs":1,"routed":"vision","failedOver":"other","cooldown":"3s","retryAfterMs":1500,
+            "latencyMs":1,"routed":"vision","agentRoute":"explore","failedOver":"other","cooldown":"3s","retryAfterMs":1500,
             "dialect":["stripThinkTags","looseJsonArguments"],"editHint":true,"streamError":"boom"}"#;
         let l: LogLine = serde_json::from_str(raw).expect("parses");
         let m = l.markers();
         assert!(m.contains("routed:vision"));
+        assert!(m.contains("agent:explore"));
         assert!(m.contains("failover<-other"));
         assert!(m.contains("cooldown:3s"));
         assert!(m.contains("streamError:boom"));

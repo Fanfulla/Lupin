@@ -37,6 +37,10 @@ pub struct LupinConfig {
     pub local_token: String,
     #[serde(default)]
     pub profiles: BTreeMap<String, ProfileConfig>,
+    /// Agent routes (SPEC-PROVIDERS section 4decies, ADR-47): name -> target,
+    /// where a target has the same shape as a slot (model name or delegation).
+    #[serde(default)]
+    pub agents: BTreeMap<String, serde_json::Value>,
 }
 
 pub fn default_config_path() -> Option<PathBuf> {

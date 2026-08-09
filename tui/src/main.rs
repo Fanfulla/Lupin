@@ -90,6 +90,10 @@ fn run(
     // dashboard keeps repainting while it runs: that is the whole point.
     let mut job: Option<job::Job> = None;
     let mut palette = false;
+    // Agents mode (ADR-47): Some(edit) while the user is aiming the per-agent
+    // routes, None otherwise. Applied atomically through the control API on
+    // Enter, thrown away on Esc.
+    let mut agents_edit: Option<ui::AgentsEdit> = None;
     loop {
         if last.elapsed() >= REFRESH {
             snap = api::snapshot(cfg_path);
@@ -109,7 +113,17 @@ fn run(
             }
         }
         clamp_selected(&mut selected, snap.profile_names.len());
-        terminal.draw(|f| ui::render(f, &snap, &message, selected, job.as_ref(), palette))?;
+        terminal.draw(|f| {
+            ui::render(
+                f,
+                &snap,
+                &message,
+                selected,
+                job.as_ref(),
+                palette,
+                agents_edit.as_ref(),
+            )
+        })?;
 
         // Poll input with a short timeout so the repaint cadence is steady.
         if event::poll(Duration::from_millis(200))? {
@@ -199,6 +213,60 @@ fn run(
                     }
                     continue;
                 }
+                // Agents mode swallows its own keys the same way: a digit here
+                // aims the selected route, never switches the active profile.
+                if let Some(edit) = agents_edit.as_mut() {
+                    match key.code {
+                        KeyCode::Esc => {
+                            agents_edit = None;
+                            message = "agents cancelled".to_string();
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            edit.cursor = edit.cursor.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if edit.cursor + 1 < edit.rows.len() {
+                                edit.cursor += 1;
+                            }
+                        }
+                        KeyCode::Char('x') => {
+                            if let Some(row) = edit.rows.get_mut(edit.cursor) {
+                                row.1 = None;
+                                message = format!("{}: unset (enter applies)", row.0);
+                            }
+                        }
+                        KeyCode::Char(d) if d.is_ascii_digit() && d != '0' => {
+                            let idx = (d as usize) - ('1' as usize);
+                            match snap.profile_names.get(idx).cloned() {
+                                // Words, never silence: a swallowed keypress is
+                                // indistinguishable from a broken keyboard.
+                                None => message = format!("there is no profile {}", idx + 1),
+                                Some(name) => {
+                                    if let Some(row) = edit.rows.get_mut(edit.cursor) {
+                                        row.1 = Some(serde_json::json!({ "profile": name }));
+                                        message = format!(
+                                            "{} -> {name} (enter applies, esc cancels)",
+                                            row.0
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let table = agents_table(&edit.rows);
+                            message = match api::set_agents(&snap, &table) {
+                                Ok(()) if table.is_empty() => "agent routes cleared".to_string(),
+                                Ok(()) => format!("agent routes applied ({})", table.len()),
+                                Err(e) => format!("agent routes failed: {e}"),
+                            };
+                            agents_edit = None;
+                            snap = api::snapshot(cfg_path);
+                            last = Instant::now();
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('d') => {
@@ -216,6 +284,15 @@ fn run(
                         order = Some(Vec::new());
                         message =
                             "order mode: type the profile numbers in the order automatic switches should follow, enter applies, esc cancels"
+                                .to_string();
+                    }
+                    KeyCode::Char('a') => {
+                        agents_edit = Some(ui::AgentsEdit {
+                            rows: agent_rows(snap.config.as_ref()),
+                            cursor: 0,
+                        });
+                        message =
+                            "agents mode: 1-9 aims the selected route at a profile, x clears, enter applies, esc cancels"
                                 .to_string();
                     }
                     KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
@@ -306,6 +383,37 @@ fn order_message(names: &[String], picked: &[usize]) -> String {
     format!("order: {} (enter applies, esc cancels)", chain.join(" -> "))
 }
 
+/// The conventional blanket route (SPEC-PROVIDERS section 4decies): shown even
+/// when unset, so the first-use gesture exists on screen.
+const SUBAGENTS_ROUTE: &str = "subagents";
+
+/// The rows agents mode edits: every configured route, plus the conventional
+/// `subagents` one when absent. Config order (alphabetical) is kept.
+fn agent_rows(config: Option<&config::LupinConfig>) -> Vec<(String, Option<serde_json::Value>)> {
+    let mut rows: Vec<(String, Option<serde_json::Value>)> = config
+        .map(|c| {
+            c.agents
+                .iter()
+                .map(|(k, v)| (k.clone(), Some(v.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !rows.iter().any(|(n, _)| n == SUBAGENTS_ROUTE) {
+        rows.push((SUBAGENTS_ROUTE.to_string(), None));
+    }
+    rows
+}
+
+/// What Enter applies: the rows that still have a target. An unset row is a
+/// removal, and an empty table turns the feature off (the daemon drops the key).
+fn agents_table(
+    rows: &[(String, Option<serde_json::Value>)],
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    rows.iter()
+        .filter_map(|(n, t)| t.clone().map(|t| (n.clone(), t)))
+        .collect()
+}
+
 /// Keeps the cursor on a real row when the profile list shrinks (a profile
 /// removed elsewhere, or the first draw before any config): never highlights a
 /// row that does not exist, and stays at 0 on an empty list.
@@ -319,7 +427,7 @@ fn clamp_selected(selected: &mut usize, len: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_selected, order_message, push_pick};
+    use super::{agent_rows, agents_table, clamp_selected, order_message, push_pick};
 
     #[test]
     fn a_pick_out_of_range_or_repeated_answers_in_words() {
@@ -348,6 +456,39 @@ mod tests {
         assert_eq!(
             order_message(&names, &[1, 0]),
             "order: openai-sub -> kimi-sub (enter applies, esc cancels)",
+        );
+    }
+
+    #[test]
+    fn the_subagents_row_is_always_on_screen_even_when_unset() {
+        // No config at all: the conventional row is still there to aim.
+        let rows = agent_rows(None);
+        assert_eq!(rows, vec![("subagents".to_string(), None)]);
+
+        // A configured table keeps its rows and gains the conventional one.
+        let raw = r#"{
+            "activeProfile": "a", "port": 1, "localToken": "t",
+            "profiles": {},
+            "agents": { "explore": { "profile": "local" }, "planner": "big" }
+        }"#;
+        let c: crate::config::LupinConfig = serde_json::from_str(raw).expect("parses");
+        let rows = agent_rows(Some(&c));
+        let names: Vec<&str> = rows.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["explore", "planner", "subagents"]);
+        assert_eq!(rows[2].1, None);
+    }
+
+    #[test]
+    fn enter_applies_only_the_rows_that_still_have_a_target() {
+        let rows = vec![
+            ("explore".to_string(), Some(serde_json::json!({"profile": "local"}))),
+            ("planner".to_string(), None),
+        ];
+        let table = agents_table(&rows);
+        assert_eq!(table.len(), 1);
+        assert_eq!(
+            table.get("explore"),
+            Some(&serde_json::json!({"profile": "local"}))
         );
     }
 

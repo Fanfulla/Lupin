@@ -156,6 +156,14 @@ fn bold() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
 }
 
+/// Agents mode (ADR-47): the table being edited and the cursor over it. A row
+/// with no target is unset: shown, and applied as a removal.
+pub struct AgentsEdit {
+    pub rows: Vec<(String, Option<serde_json::Value>)>,
+    pub cursor: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
     snap: &Snapshot,
@@ -163,6 +171,7 @@ pub fn render(
     selected: usize,
     job: Option<&Job>,
     palette: bool,
+    agents: Option<&AgentsEdit>,
 ) {
     // The portrait is worth 15 rows only where 15 rows are spare. Below that the
     // hat says the same thing in 4, and below THAT the screen is for facts.
@@ -208,6 +217,50 @@ pub fn render(
     if palette {
         render_palette(f, f.area());
     }
+    if let Some(edit) = agents {
+        render_agents(f, edit, f.area());
+    }
+}
+
+/// The agents-mode overlay: one row per route, target by name (the same
+/// `->profile` notation the slots use), the cursor reversed. Model targets and
+/// new route names are CLI gestures, and the footer says so instead of hiding
+/// the limit.
+fn render_agents(f: &mut Frame, edit: &AgentsEdit, area: Rect) {
+    let area = centred(area, 66, 60);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(" agent routes ", bold()));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let mut lines: Vec<Line> = edit
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, (name, target))| {
+            let label = target
+                .as_ref()
+                .map(crate::config::slot_label)
+                .unwrap_or_else(|| "(unset)".to_string());
+            let text = format!(" {name:<20} {label}");
+            if i == edit.cursor {
+                Line::from(Span::styled(text, Style::default().add_modifier(Modifier::REVERSED)))
+            } else {
+                Line::from(Span::raw(text))
+            }
+        })
+        .collect();
+    lines.push(Line::from(Span::styled(
+        " 1-9 aim at profile   x clear   enter apply   esc cancel",
+        dim(),
+    )));
+    lines.push(Line::from(Span::styled(
+        " models and new names: `lupin agents set`",
+        dim(),
+    )));
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// A centred box, in percent of the screen, for the overlays.
@@ -640,7 +693,7 @@ fn render_message(f: &mut Frame, message: &str, area: Rect) {
 fn render_keys(f: &mut Frame, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "  q quit   1-9/arrows+enter switch   d doctor   : commands   o order   r refresh",
+            "  q quit   1-9/arrows+enter switch   d doctor   : commands   o order   a agents   r refresh",
             dim(),
         ))),
         area,
@@ -669,7 +722,7 @@ mod tests {
 
     fn screen_sel(snap: &Snapshot, message: &str, selected: usize) -> String {
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, snap, message, selected, None, false))
+        term.draw(|f| render(f, snap, message, selected, None, false, None))
             .expect("draw");
         term.backend()
             .buffer()
@@ -677,6 +730,42 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect::<String>()
+    }
+
+    /// The agents-mode overlay, drawn on top of the dashboard (ADR-47).
+    #[test]
+    fn agents_mode_lists_the_routes_and_marks_the_cursor() {
+        let snap = Snapshot {
+            config: Some(config()),
+            health: None,
+            recent: Vec::new(),
+            profile_names: vec!["kimi-sub".to_string()],
+        };
+        let edit = AgentsEdit {
+            rows: vec![
+                ("explore".to_string(), Some(serde_json::json!({"profile": "local"}))),
+                ("subagents".to_string(), None),
+            ],
+            cursor: 0,
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, Some(&edit)))
+            .expect("draw");
+        let out = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(out.contains("agent routes"), "{out}");
+        assert!(out.contains("explore"), "{out}");
+        assert!(out.contains("->local"), "{out}");
+        // The unset conventional row is shown, not hidden: it is the first-use
+        // gesture.
+        assert!(out.contains("subagents"), "{out}");
+        assert!(out.contains("(unset)"), "{out}");
+        assert!(out.contains("lupin agents set"), "{out}");
     }
 
     fn config() -> LupinConfig {
@@ -760,7 +849,7 @@ mod tests {
             profile_names: vec!["kimi-sub".to_string()],
         };
         let mut term = Terminal::new(TestBackend::new(20, 4)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None))
             .expect("draw on a cramped screen");
     }
 
@@ -825,6 +914,7 @@ mod tests {
             profile: "p".to_string(),
             model: "m".to_string(),
             routed: None,
+            agent_route: None,
             failed_over: None,
             cooldown: None,
             retry_after_ms: None,
@@ -848,7 +938,7 @@ mod tests {
     /// the cursor highlight, drawn on the selected row.
     fn any_reversed(snap: &Snapshot, selected: usize) -> bool {
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, snap, "ready", selected, None, false))
+        term.draw(|f| render(f, snap, "ready", selected, None, false, None))
             .expect("draw");
         term.backend()
             .buffer()
@@ -919,7 +1009,7 @@ mod tests {
         // The reversed cell's vertical position changes with `selected`.
         let y_of = |selected: usize| {
             let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-            term.draw(|f| render(f, &snap, "ready", selected, None, false))
+            term.draw(|f| render(f, &snap, "ready", selected, None, false, None))
                 .expect("draw");
             let buf = term.backend().buffer();
             let width = buf.area().width as usize;

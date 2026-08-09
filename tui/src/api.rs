@@ -108,6 +108,35 @@ pub fn set_switch_order(snap: &Snapshot, order: &[String]) -> Result<(), String>
     }
 }
 
+/// Replace the agent-routes table (SPEC-PROVIDERS section 4decies): one atomic
+/// call, like the switch order. The daemon validates, writes the config and
+/// hot-reloads; the outcome comes back as words for the talking line.
+pub fn set_agents(
+    snap: &Snapshot,
+    agents: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<(), String> {
+    let Some(config) = &snap.config else {
+        return Err("no config".to_string());
+    };
+    let url = format!("http://127.0.0.1:{}/v1/lupin/agents", config.port);
+    let body = serde_json::json!({ "agents": agents });
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(1500))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = client
+        .post(&url)
+        .header("authorization", format!("Bearer {}", config.local_token))
+        .json(&body)
+        .send()
+        .map_err(|_| "daemon not answering (lupin run -- claude starts it)".to_string())?;
+    if res.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("daemon said HTTP {}", res.status().as_u16()))
+    }
+}
+
 pub fn switch_profile(snap: &Snapshot, name: &str) -> Result<(), String> {
     let Some(config) = &snap.config else {
         return Err("no config".to_string());
