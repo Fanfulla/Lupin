@@ -22,7 +22,7 @@ Conventions worth knowing when reading this repository: every behaviour of the t
 ## Specifications
 
 - [SPEC-TRANSLATION](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/SPEC-TRANSLATION.md): field mapping, content blocks, tools, the SSE state machine, errors, count_tokens, dialect normalization for eight model families verified against the official chat templates, and ten acceptance fixtures
-- [SPEC-PROVIDERS](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/SPEC-PROVIDERS.md): the provider registry with verified endpoints and verification dates, the profile and slot schema, routing, failover, and the quirk registry
+- [SPEC-PROVIDERS](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/SPEC-PROVIDERS.md): the provider registry with verified endpoints and verification dates, the profile and slot schema, routing, failover, per-subagent agent routes (mix subagents across models and providers), and the quirk registry
 - [SPEC-CLI](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/SPEC-CLI.md): every command, the doctor's six checks and scoring rules, security, and the UX acceptance criteria
 - [ARCHITECTURE](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/ARCHITECTURE.md): repository layout, dependency rules that keep the translation core pure, and the request flow
 - [TESTING](https://raw.githubusercontent.com/Fanfulla/Lupin/main/docs/TESTING.md): fixture format, how captures are recorded from real provider output, test levels, and the fake provider
