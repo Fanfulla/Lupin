@@ -7,6 +7,30 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
+## [0.2.2] - 2026-08-09
+
+### Added
+
+- **`lupin update` (ADR-49).** One command from "there is a newer Lupin" to
+  "everything on this machine runs it": a registry check (only when you invoke
+  it, never a startup phone-home), `npm i -g lupin-code@latest` with npm's own
+  output visible, and, when a `lupin-tui` sidecar is on your PATH and a Rust
+  toolchain exists, a rebuild of the sidecar to the matching version from the
+  TUI sources the package now ships, replacing the binary only on build
+  success. No sidecar means no offer; no cargo means the manual command is
+  printed instead of a failure.
+- **`lupin agents ... --wire` (ADR-48).** The last manual step of agent routing
+  gone: `set <name> --profile <p> --wire` finds the agent's definition file
+  (project `.claude/agents` first, then your home; matched on the frontmatter
+  `name:`, falling back to the filename) and writes `model:
+  claude-lupin-agent:<name>` into it; `unset <name> --wire` restores `inherit`,
+  the documented client default. This is the one deliberate exception to
+  "Lupin never touches your harness": explicit flag per invocation, that single
+  field, old value printed next to the new one, every other byte of the file
+  untouched, and a file without a frontmatter block refused rather than
+  restructured. Built-in agents have no file, and the command says so: for
+  those the blanket `subagents` route is the lever.
+
 ## [0.2.1] - 2026-08-09
 
 ### Added

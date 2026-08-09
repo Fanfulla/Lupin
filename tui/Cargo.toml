@@ -1,6 +1,6 @@
 [package]
 name = "lupin-tui"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Optional terminal hub for the Lupin proxy (DESIGN-OAUTH-PKCE-TUI)"
 license = "Apache-2.0"

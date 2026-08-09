@@ -1,6 +1,6 @@
 {
   "name": "lupin-code",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Local proxy: use Claude Code (MCP, skills, hooks, plugins) with any LLM provider",
   "keywords": [
     "claude-code",
@@ -50,7 +50,12 @@
   "files": [
     "dist",
     "fixtures/mcp-echo",
-    "examples"
+    "examples",
+    "tui/src",
+    "tui/Cargo.toml",
+    "tui/Cargo.lock",
+    "tui/build-msvc.bat",
+    "tui/README.md"
   ],
   "scripts": {
     "test": "vitest run",

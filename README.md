@@ -29,7 +29,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Node >= 20](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)
 ![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178c6)
-![tests](https://img.shields.io/badge/tests-743%20node%20%2B%2045%20rust-success)
+![tests](https://img.shields.io/badge/tests-762%20node%20%2B%2045%20rust-success)
 
 </div>
 
@@ -66,14 +66,17 @@ Mix subagents, each agent type on its own model or provider:
 
 ```bash
 lupin agents set subagents --profile ollama-qwen   # every subagent on the local model
-lupin agents set explore --profile kimi            # except Explore, on Kimi
+lupin agents set explore --profile kimi --wire     # a named agent, frontmatter written for you
 lupin agents                                       # the table, plus the id each agent uses
 ```
 
 `lupin agents` prints an id per route (`claude-lupin-agent:<name>`). Put it in
-an agent's frontmatter `model:` (or let `lupin run` wire the blanket
-`subagents` route through `CLAUDE_CODE_SUBAGENT_MODEL` for you) and that agent
-is yours to aim, live, from the CLI, the TUI (`a`) or the control API. There is
+an agent's frontmatter `model:`, or let Lupin do even that: `--wire` writes
+the line into the agent's definition file (the one deliberate exception to
+"never touch your harness", on an explicit flag, old value printed, ADR-48),
+and the blanket `subagents` route travels through `CLAUDE_CODE_SUBAGENT_MODEL`,
+which `lupin run` sets for you. After that one-time aim, the agent is yours,
+live, from the CLI, the TUI (`a`) or the control API. There is
 no other honest way: Claude Code sends no header or metadata that identifies a
 subagent, so the model id is the one channel a proxy can route on, and the
 routing stays visible per request in the log (`agent:<name>` in `lupin top`).
@@ -218,6 +221,11 @@ lupin        # the hub finds the sidecar and opens the dashboard
 lupin-tui    # or run it directly
 ```
 
+That build is a one-time cost: from then on `lupin update` rebuilds the sidecar
+to the matching version on every package update, from the sources the package
+itself ships (it needs the Rust toolchain; without one it prints the manual
+command instead).
+
 Keys: `1`-`9` switch profile, arrows and `Enter` do the same on the highlighted
 row, **`d` runs the doctor on the highlighted profile**, **`:` opens the command
 palette**, `o` edits the failover order, **`a` opens agents mode**, `r`
@@ -243,7 +251,7 @@ every fact and shrinks the art. It needs a real terminal: it takes over the
 screen, so it will not do anything useful inside another tool's output pane.
 
 ```
-⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.2.1   the gentleman router
+⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.2.2   the gentleman router
 ⠈⢿⣿⣿⣿⣿⣿⣷⣖⠀⠀⠀⠀⠀⠀⠀  daemon up   127.0.0.1:3456
 ⠀⠴⢿⣿⣿⣿⣿⣿⣿⣀⠀⠀⠀⠀⠀⠀  active: kimi-sub  ->  k3
 ⠀⠀⠈⠛⢿⠿⣿⣿⣿⣿⣿⣶⣶⣶⣤⣄
@@ -348,6 +356,8 @@ That distinction is not pedantry. `gemma-4-12b` declares a 262,144 token window 
 | `resume [profile]` | continue this directory's last session on another provider |
 | `doctor [profile]` | the real headless session, scored on disk artefacts |
 | `use <profile> --opus <model>` | aim a slot by hand, for profiles whose models come from the account |
+| `agents set <name> --profile <p> [--wire]` | per-subagent routes; `--wire` writes the agent file's `model:` line for you |
+| `update` | update the npm package and rebuild the TUI sidecar if you have one |
 | `list` / `status` / `stop` / `logs -f` | the plain truths |
 | `top` | live console, no sidecar needed |
 | `usage [--days N]` | tokens really served, aggregated from your local log |
