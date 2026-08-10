@@ -9,7 +9,7 @@ Interactive wizard: (1) pick a provider from the list, each with an honest descr
 
 ### Bare `lupin`: TUI-native onboarding
 
-With a TTY and an available `lupin-tui` sidecar, bare `lupin` opens the hub. When no config exists, the hub starts an empty in-memory daemon and passes its loopback port and generated local token to the TUI. Nothing is persisted until a provider has been verified. The first saved profile must keep that bootstrap port and local token so the running TUI and daemon stay authenticated after the config appears.
+With a TTY and an available `lupin-tui` sidecar, bare `lupin` opens the hub. When no config exists, the hub starts an empty in-memory daemon and passes its loopback port and generated local token to the TUI. No config or credentials are persisted until a provider has been successfully verified; normal daemon lifecycle files such as the pidfile, log and watchdog pidfile may be written at startup. The first saved profile must keep that bootstrap port and local token so the running TUI and daemon stay authenticated after the config appears.
 
 The add-provider screen reads the hosted defaults from the existing authenticated control API and labels each row `(OAuth)` or `(API key)`. API-key input stays masked; the daemon performs the same one-token connectivity check as `lupin init`, and a failed key saves neither the key nor a profile. OAuth starts as an in-memory daemon job, shows the browser URL when it is available, and is polled by the TUI until completion or failure. A provider carrying a suspension warning requires an explicit confirmation before the browser flow starts. Success refreshes the dashboard instead of spawning another command.
 
