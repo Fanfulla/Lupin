@@ -16,3 +16,5 @@ tui/target/
 # Launch material (Reddit/HN posts, presentation videos): local only, never published
 marketing/
 
+# Isolated implementation worktrees
+.worktrees/
