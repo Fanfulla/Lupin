@@ -141,10 +141,7 @@ fn run(
                 bootstrap_identity,
                 &mut message,
             );
-            if matches!(add_provider, Some(AddProviderMode::Success(_))) && !needs_provider(&snap) {
-                add_provider = None;
-                message = "provider added".to_string();
-            }
+            promote_success_to_dashboard(&mut add_provider, &snap, &mut message);
             last = Instant::now();
         }
         // Drained every tick, before the draw, so the panel shows what arrived.
@@ -188,6 +185,7 @@ fn run(
                     match handle_add_provider_key(
                         mode,
                         key.code,
+                        key.modifiers,
                         &snap,
                         bootstrap_identity,
                         cfg_path,
@@ -421,6 +419,17 @@ fn needs_provider(snap: &api::Snapshot) -> bool {
         .is_none_or(|config| config.profiles.is_empty())
 }
 
+fn promote_success_to_dashboard(
+    add_provider: &mut Option<AddProviderMode>,
+    snap: &api::Snapshot,
+    message: &mut String,
+) {
+    if matches!(add_provider, Some(AddProviderMode::Success(_))) && !needs_provider(snap) {
+        *add_provider = None;
+        *message = "provider added".to_string();
+    }
+}
+
 fn onboarding_identity(
     snap: &api::Snapshot,
     bootstrap_identity: Option<&config::BootstrapIdentity>,
@@ -530,6 +539,7 @@ fn submit_provider_key(
 fn handle_add_provider_key(
     mode: AddProviderMode,
     key: KeyCode,
+    modifiers: event::KeyModifiers,
     snap: &api::Snapshot,
     bootstrap_identity: Option<&config::BootstrapIdentity>,
     cfg_path: &std::path::Path,
@@ -683,6 +693,13 @@ fn handle_add_provider_key(
                 url,
             }),
         },
+        AddProviderMode::Success(_)
+            if key == KeyCode::Char('q')
+                || (key == KeyCode::Char('c')
+                    && modifiers.contains(event::KeyModifiers::CONTROL)) =>
+        {
+            AddProviderAction::Exit
+        }
         AddProviderMode::Success(message_text) => {
             AddProviderAction::Stay(AddProviderMode::Success(message_text))
         }
@@ -858,11 +875,11 @@ fn clamp_selected(selected: &mut usize, len: usize) {
 mod tests {
     use super::{
         agent_rows, agents_table, clamp_selected, clear_cancelled_key, handle_add_provider_key,
-        onboarding_error, order_message, push_pick, redact_key_from_error, submit_provider_key,
-        AddProviderAction, AddProviderMode,
+        onboarding_error, order_message, promote_success_to_dashboard, push_pick,
+        redact_key_from_error, submit_provider_key, AddProviderAction, AddProviderMode,
     };
     use crate::api::{AuthKind, ProviderRow, Snapshot};
-    use crossterm::event::KeyCode;
+    use crossterm::event::{KeyCode, KeyModifiers};
 
     fn empty_snapshot() -> Snapshot {
         Snapshot {
@@ -874,18 +891,46 @@ mod tests {
     }
 
     fn provider(auth_kind: AuthKind) -> ProviderRow {
+        provider_with_id("catalogue-row", auth_kind)
+    }
+
+    fn provider_with_id(id: &str, auth_kind: AuthKind) -> ProviderRow {
         ProviderRow {
-            id: "catalogue-row".to_string(),
+            id: id.to_string(),
             description: "Catalogue Row".to_string(),
             auth_kind,
             suspension_warning: None,
         }
     }
 
+    fn provider_ids(providers: &[ProviderRow]) -> Vec<&str> {
+        providers
+            .iter()
+            .map(|provider| provider.id.as_str())
+            .collect()
+    }
+
     fn route(mode: AddProviderMode, key: KeyCode) -> AddProviderAction {
         handle_add_provider_key(
             mode,
             key,
+            KeyModifiers::NONE,
+            &empty_snapshot(),
+            None,
+            std::path::Path::new(""),
+            &mut String::new(),
+        )
+    }
+
+    fn route_with_modifiers(
+        mode: AddProviderMode,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> AddProviderAction {
+        handle_add_provider_key(
+            mode,
+            key,
+            modifiers,
             &empty_snapshot(),
             None,
             std::path::Path::new(""),
@@ -902,7 +947,12 @@ mod tests {
 
     #[test]
     fn delayed_success_keys_never_exit_the_tui() {
-        for key in [KeyCode::Enter, KeyCode::Esc] {
+        for key in [
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Char('x'),
+            KeyCode::Char('c'),
+        ] {
             assert!(matches!(
                 route(AddProviderMode::Success("provider added".to_string()), key),
                 AddProviderAction::Stay(AddProviderMode::Success(_))
@@ -911,9 +961,63 @@ mod tests {
     }
 
     #[test]
+    fn delayed_success_q_exits_the_tui() {
+        assert!(matches!(
+            route(
+                AddProviderMode::Success("provider added".to_string()),
+                KeyCode::Char('q')
+            ),
+            AddProviderAction::Exit
+        ));
+    }
+
+    #[test]
+    fn delayed_success_ctrl_c_exits_the_tui() {
+        assert!(matches!(
+            route_with_modifiers(
+                AddProviderMode::Success("provider added".to_string()),
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            ),
+            AddProviderAction::Exit
+        ));
+    }
+
+    #[test]
+    fn refresh_with_a_profile_returns_delayed_success_to_the_dashboard() {
+        let config = serde_json::from_str(
+            r#"{
+                "activeProfile": "ready-profile",
+                "port": 3456,
+                "localToken": "t",
+                "profiles": {
+                    "ready-profile": {
+                        "mode": "passthrough",
+                        "slots": {}
+                    }
+                }
+            }"#,
+        )
+        .expect("config");
+        let snap = Snapshot {
+            config: Some(config),
+            health: None,
+            recent: Vec::new(),
+            profile_names: vec!["ready-profile".to_string()],
+        };
+        let mut mode = Some(AddProviderMode::Success("provider added".to_string()));
+        let mut message = String::new();
+
+        promote_success_to_dashboard(&mut mode, &snap, &mut message);
+
+        assert!(mode.is_none());
+        assert_eq!(message, "provider added");
+    }
+
+    #[test]
     fn risk_cancel_restores_the_existing_catalogue_and_cursor() {
-        let key_row = provider(AuthKind::Key);
-        let mut oauth_row = provider(AuthKind::Oauth);
+        let key_row = provider_with_id("key-first", AuthKind::Key);
+        let mut oauth_row = provider_with_id("oauth-second", AuthKind::Oauth);
         oauth_row.suspension_warning = Some("Account suspension risk".to_string());
         let confirmation = stayed_mode(route(
             AddProviderMode::List {
@@ -926,7 +1030,7 @@ mod tests {
         let AddProviderMode::List { providers, cursor } = cancelled else {
             panic!("risk cancel must restore the catalogue");
         };
-        assert_eq!(providers.len(), 2);
+        assert_eq!(provider_ids(&providers), ["key-first", "oauth-second"]);
         assert_eq!(cursor, 1);
     }
 
@@ -934,7 +1038,10 @@ mod tests {
     fn key_cancel_restores_the_existing_catalogue_and_cursor() {
         let input = stayed_mode(route(
             AddProviderMode::List {
-                providers: vec![provider(AuthKind::Oauth), provider(AuthKind::Key)],
+                providers: vec![
+                    provider_with_id("oauth-first", AuthKind::Oauth),
+                    provider_with_id("key-second", AuthKind::Key),
+                ],
                 cursor: 1,
             },
             KeyCode::Enter,
@@ -944,17 +1051,17 @@ mod tests {
         let AddProviderMode::List { providers, cursor } = cancelled else {
             panic!("key cancel must restore the catalogue");
         };
-        assert_eq!(providers.len(), 2);
+        assert_eq!(provider_ids(&providers), ["oauth-first", "key-second"]);
         assert_eq!(cursor, 1);
     }
 
     #[test]
     fn oauth_cancel_restores_the_existing_catalogue_and_cursor() {
-        let oauth_row = provider(AuthKind::Oauth);
+        let oauth_row = provider_with_id("oauth-second", AuthKind::Oauth);
         let cancelled = stayed_mode(route(
             AddProviderMode::OAuthWaiting {
                 provider: oauth_row.clone(),
-                providers: vec![provider(AuthKind::Key), oauth_row],
+                providers: vec![provider_with_id("key-first", AuthKind::Key), oauth_row],
                 cursor: 1,
                 job: "job-7".to_string(),
                 url: Some("https://auth.example/start".to_string()),
@@ -964,7 +1071,7 @@ mod tests {
         let AddProviderMode::List { providers, cursor } = cancelled else {
             panic!("OAuth cancel must restore the catalogue");
         };
-        assert_eq!(providers.len(), 2);
+        assert_eq!(provider_ids(&providers), ["key-first", "oauth-second"]);
         assert_eq!(cursor, 1);
     }
 
@@ -972,7 +1079,10 @@ mod tests {
     fn retryable_error_acknowledgement_restores_the_existing_catalogue() {
         let error = stayed_mode(route(
             AddProviderMode::List {
-                providers: vec![provider(AuthKind::Oauth), provider(AuthKind::Key)],
+                providers: vec![
+                    provider_with_id("oauth-first", AuthKind::Oauth),
+                    provider_with_id("key-second", AuthKind::Key),
+                ],
                 cursor: 0,
             },
             KeyCode::Enter,
@@ -982,7 +1092,7 @@ mod tests {
         let AddProviderMode::List { providers, cursor } = acknowledged else {
             panic!("error acknowledgement must restore the catalogue");
         };
-        assert_eq!(providers.len(), 2);
+        assert_eq!(provider_ids(&providers), ["oauth-first", "key-second"]);
         assert_eq!(cursor, 0);
     }
 
@@ -1022,6 +1132,7 @@ mod tests {
                 cursor: 0,
             },
             KeyCode::Enter,
+            KeyModifiers::NONE,
             &empty_snapshot(),
             None,
             std::path::Path::new(""),
@@ -1043,6 +1154,7 @@ mod tests {
                 value: "clé🔑".to_string(),
             },
             KeyCode::Backspace,
+            KeyModifiers::NONE,
             &empty_snapshot(),
             None,
             std::path::Path::new(""),
