@@ -33,14 +33,16 @@ fn main() -> io::Result<()> {
         println!("lupin-tui {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    let bootstrap_identity = config::bootstrap_identity_from_env();
     let cfg_path = match config::default_config_path() {
         Some(p) => p,
+        None if bootstrap_identity.is_some() => std::path::PathBuf::new(),
         None => {
             eprintln!("no config yet: run `lupin init` first");
             std::process::exit(1);
         }
     };
-    if config::load(&cfg_path).is_err() {
+    if config::load(&cfg_path).is_err() && bootstrap_identity.is_none() {
         eprintln!("no config yet: run `lupin init` first");
         std::process::exit(1);
     }
@@ -61,8 +63,8 @@ fn main() -> io::Result<()> {
 
     // Restore runs on the error paths too (Terminal::new included), and a
     // failed restore never shadows the real error.
-    let result =
-        Terminal::new(CrosstermBackend::new(stdout)).and_then(|mut t| run(&mut t, &cfg_path));
+    let result = Terminal::new(CrosstermBackend::new(stdout))
+        .and_then(|mut t| run(&mut t, &cfg_path, bootstrap_identity.as_ref()));
     let _ = disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen);
     result
@@ -71,9 +73,10 @@ fn main() -> io::Result<()> {
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     cfg_path: &std::path::Path,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
 ) -> io::Result<()> {
     let mut last = Instant::now() - REFRESH;
-    let mut snap = api::snapshot(cfg_path);
+    let mut snap = api::snapshot(cfg_path, bootstrap_identity);
     // The talking line: the dashboard narrates what it just did, so an action
     // and its outcome are never invisible.
     let mut message = String::from(
@@ -96,7 +99,7 @@ fn run(
     let mut agents_edit: Option<ui::AgentsEdit> = None;
     loop {
         if last.elapsed() >= REFRESH {
-            snap = api::snapshot(cfg_path);
+            snap = api::snapshot(cfg_path, bootstrap_identity);
             last = Instant::now();
         }
         // Drained every tick, before the draw, so the panel shows what arrived.
@@ -108,7 +111,7 @@ fn run(
                     Some(true) => format!("{} finished (esc closes)", j.label),
                     _ => format!("{} failed (esc closes)", j.label),
                 };
-                snap = api::snapshot(cfg_path);
+                snap = api::snapshot(cfg_path, bootstrap_identity);
                 last = Instant::now();
             }
         }
@@ -198,7 +201,7 @@ fn run(
                                     Err(e) => format!("switch order failed: {e}"),
                                 };
                                 order = None;
-                                snap = api::snapshot(cfg_path);
+                                snap = api::snapshot(cfg_path, bootstrap_identity);
                                 last = Instant::now();
                             }
                         }
@@ -260,7 +263,7 @@ fn run(
                                 Err(e) => format!("agent routes failed: {e}"),
                             };
                             agents_edit = None;
-                            snap = api::snapshot(cfg_path);
+                            snap = api::snapshot(cfg_path, bootstrap_identity);
                             last = Instant::now();
                         }
                         _ => {}
@@ -299,7 +302,7 @@ fn run(
                         return Ok(())
                     }
                     KeyCode::Char('r') => {
-                        snap = api::snapshot(cfg_path);
+                        snap = api::snapshot(cfg_path, bootstrap_identity);
                         last = Instant::now();
                         message = "refreshed".to_string();
                     }
@@ -317,7 +320,7 @@ fn run(
                                 Ok(()) => format!("active profile -> {name}"),
                                 Err(e) => format!("switch to {name} failed: {e}"),
                             };
-                            snap = api::snapshot(cfg_path);
+                            snap = api::snapshot(cfg_path, bootstrap_identity);
                             last = Instant::now();
                         }
                     }
@@ -330,7 +333,7 @@ fn run(
                                 Ok(()) => format!("active profile -> {name}"),
                                 Err(e) => format!("switch to {name} failed: {e}"),
                             };
-                            snap = api::snapshot(cfg_path);
+                            snap = api::snapshot(cfg_path, bootstrap_identity);
                             last = Instant::now();
                         }
                     }

@@ -3,7 +3,7 @@
 // and the log tail. State changes go through the control API, never by
 // writing the config file here.
 
-use crate::config::{self, LupinConfig};
+use crate::config::{self, BootstrapIdentity, LupinConfig};
 use crate::logtail::{self, LogLine};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -31,6 +31,38 @@ pub struct Tier {
     pub upgrade: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthKind {
+    Key,
+    Oauth,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRow {
+    pub id: String,
+    pub description: String,
+    pub auth_kind: AuthKind,
+    #[serde(default)]
+    pub suspension_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LoginStatus {
+    Pending,
+    Done,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginPoll {
+    pub status: LoginStatus,
+    pub message: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     pub config: Option<LupinConfig>,
@@ -41,11 +73,14 @@ pub struct Snapshot {
     pub profile_names: Vec<String>,
 }
 
-pub fn snapshot(cfg_path: &Path) -> Snapshot {
+pub fn snapshot(cfg_path: &Path, bootstrap_identity: Option<&BootstrapIdentity>) -> Snapshot {
     let config = config::load(cfg_path).ok();
     let (health, profile_names) = match &config {
-        Some(c) => (fetch_health(c), c.profiles.keys().cloned().collect()),
-        None => (None, Vec::new()),
+        Some(c) => (fetch_health(c.port), c.profiles.keys().cloned().collect()),
+        None => (
+            bootstrap_identity.and_then(|identity| fetch_health(identity.port)),
+            Vec::new(),
+        ),
     };
     let recent = config::lupin_dir()
         .map(|d| logtail::recent(&d.join("lupin.log"), 12))
@@ -58,8 +93,8 @@ pub fn snapshot(cfg_path: &Path) -> Snapshot {
     }
 }
 
-fn fetch_health(config: &LupinConfig) -> Option<Health> {
-    let url = format!("http://127.0.0.1:{}/health", config.port);
+fn fetch_health(port: u16) -> Option<Health> {
+    let url = format!("http://127.0.0.1:{port}/health");
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_millis(800))
         .build()
@@ -76,6 +111,161 @@ fn fetch_health(config: &LupinConfig) -> Option<Health> {
         return None;
     }
     res.json::<Health>().ok()
+}
+
+pub fn fetch_providers(identity: &BootstrapIdentity) -> Result<Vec<ProviderRow>, String> {
+    let url = format!("http://127.0.0.1:{}/v1/lupin/providers", identity.port);
+    let res = control_client()?
+        .get(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", identity.local_token),
+        )
+        .send()
+        .map_err(|_| daemon_not_answering())?;
+    let status = res.status().as_u16();
+    let body = res.text().unwrap_or_default();
+    parse_providers(status, &body)
+}
+
+pub fn start_login(
+    identity: &BootstrapIdentity,
+    provider: &str,
+    accept_risk: bool,
+) -> Result<String, String> {
+    let url = format!("http://127.0.0.1:{}/v1/lupin/login", identity.port);
+    let body = serde_json::json!({ "provider": provider, "acceptRisk": accept_risk });
+    let res = control_client()?
+        .post(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", identity.local_token),
+        )
+        .json(&body)
+        .send()
+        .map_err(|_| daemon_not_answering())?;
+    let status = res.status().as_u16();
+    let body = res.text().unwrap_or_default();
+    parse_login_start(status, &body)
+}
+
+pub fn poll_login(identity: &BootstrapIdentity, job: &str) -> Result<LoginPoll, String> {
+    let url = format!("http://127.0.0.1:{}/v1/lupin/login/{job}", identity.port);
+    let res = control_client()?
+        .get(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", identity.local_token),
+        )
+        .send()
+        .map_err(|_| daemon_not_answering())?;
+    let status = res.status().as_u16();
+    let body = res.text().unwrap_or_default();
+    parse_login_poll(status, &body)
+}
+
+pub fn setup_key(identity: &BootstrapIdentity, provider_id: &str, key: &str) -> Result<(), String> {
+    let url = format!("http://127.0.0.1:{}/v1/lupin/setup-key", identity.port);
+    let body = serde_json::json!({ "providerId": provider_id, "key": key });
+    let res = control_client()?
+        .post(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", identity.local_token),
+        )
+        .json(&body)
+        .send()
+        .map_err(|_| daemon_not_answering())?;
+    let status = res.status().as_u16();
+    let body = res.text().unwrap_or_default();
+    parse_setup_key(status, &body)
+}
+
+fn control_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(1500))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn daemon_not_answering() -> String {
+    "daemon not answering (lupin run -- claude starts it)".to_string()
+}
+
+#[derive(Deserialize)]
+struct ProvidersEnvelope {
+    ok: bool,
+    #[serde(default)]
+    providers: Option<Vec<ProviderRow>>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn parse_providers(status: u16, body: &str) -> Result<Vec<ProviderRow>, String> {
+    let parsed: ProvidersEnvelope = serde_json::from_str(body).map_err(|_| http_error(status))?;
+    if !(200..300).contains(&status) || !parsed.ok {
+        return Err(parsed.error.unwrap_or_else(|| http_error(status)));
+    }
+    parsed.providers.ok_or_else(|| http_error(status))
+}
+
+#[derive(Deserialize)]
+struct LoginStartEnvelope {
+    ok: bool,
+    #[serde(default)]
+    job: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn parse_login_start(status: u16, body: &str) -> Result<String, String> {
+    let parsed: LoginStartEnvelope = serde_json::from_str(body).map_err(|_| http_error(status))?;
+    if !(200..300).contains(&status) || !parsed.ok {
+        return Err(parsed.error.unwrap_or_else(|| http_error(status)));
+    }
+    parsed.job.ok_or_else(|| http_error(status))
+}
+
+#[derive(Deserialize)]
+struct LoginPollEnvelope {
+    ok: bool,
+    #[serde(default)]
+    status: Option<LoginStatus>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn parse_login_poll(status: u16, body: &str) -> Result<LoginPoll, String> {
+    let parsed: LoginPollEnvelope = serde_json::from_str(body).map_err(|_| http_error(status))?;
+    if !(200..300).contains(&status) || !parsed.ok {
+        return Err(parsed.error.unwrap_or_else(|| http_error(status)));
+    }
+    Ok(LoginPoll {
+        status: parsed.status.ok_or_else(|| http_error(status))?,
+        message: parsed.message,
+        error: parsed.error,
+    })
+}
+
+#[derive(Deserialize)]
+struct SetupKeyEnvelope {
+    ok: bool,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn parse_setup_key(status: u16, body: &str) -> Result<(), String> {
+    let parsed: SetupKeyEnvelope = serde_json::from_str(body).map_err(|_| http_error(status))?;
+    if !(200..300).contains(&status) || !parsed.ok {
+        return Err(parsed.error.unwrap_or_else(|| http_error(status)));
+    }
+    Ok(())
+}
+
+fn http_error(status: u16) -> String {
+    format!("daemon said HTTP {status}")
 }
 
 /// Switch the active profile through the control API (the daemon writes the
@@ -162,7 +352,10 @@ pub fn switch_profile(snap: &Snapshot, name: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::Health;
+    use super::{
+        parse_login_poll, parse_login_start, parse_providers, parse_setup_key, AuthKind, Health,
+        LoginStatus,
+    };
 
     /// The reason `fetch_health` checks the status before parsing. The watchdog
     /// answers a 529 whose body is an Anthropic error object, and nothing in
@@ -186,5 +379,79 @@ mod tests {
         let parsed: Health = serde_json::from_str(body).expect("health");
         assert_eq!(parsed.active_profile.as_deref(), Some("kimi-sub"));
         assert_eq!(parsed.slots.get("opus").map(String::as_str), Some("k3"));
+    }
+
+    #[test]
+    fn provider_catalogue_decodes_auth_kinds_and_optional_warning() {
+        let body = r#"{
+            "ok": true,
+            "providers": [
+                { "id": "key-row", "description": "Key provider", "authKind": "key" },
+                {
+                    "id": "oauth-row",
+                    "description": "OAuth provider",
+                    "authKind": "oauth",
+                    "suspensionWarning": "Account risk"
+                }
+            ]
+        }"#;
+        let rows = parse_providers(200, body).expect("provider catalogue");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].auth_kind, AuthKind::Key);
+        assert_eq!(rows[0].suspension_warning, None);
+        assert_eq!(rows[1].auth_kind, AuthKind::Oauth);
+        assert_eq!(rows[1].suspension_warning.as_deref(), Some("Account risk"));
+    }
+
+    #[test]
+    fn login_poll_preserves_pending_url_and_done_state() {
+        let pending = parse_login_poll(
+            200,
+            r#"{"ok":true,"status":"pending","message":"https://auth.example/start"}"#,
+        )
+        .expect("pending login");
+        assert_eq!(pending.status, LoginStatus::Pending);
+        assert_eq!(
+            pending.message.as_deref(),
+            Some("https://auth.example/start")
+        );
+        assert_eq!(pending.error, None);
+
+        let done = parse_login_poll(200, r#"{"ok":true,"status":"done"}"#).expect("done login");
+        assert_eq!(done.status, LoginStatus::Done);
+        assert_eq!(done.message, None);
+        assert_eq!(done.error, None);
+    }
+
+    #[test]
+    fn login_start_returns_the_job_id() {
+        assert_eq!(
+            parse_login_start(200, r#"{"ok":true,"job":"job-7"}"#),
+            Ok("job-7".to_string())
+        );
+    }
+
+    #[test]
+    fn route_errors_surface_the_node_error_text() {
+        assert_eq!(
+            parse_login_start(
+                409,
+                r#"{"ok":false,"error":"Risk acceptance required","requiresRiskAcceptance":true}"#,
+            ),
+            Err("Risk acceptance required".to_string())
+        );
+        assert_eq!(
+            parse_providers(503, "not json"),
+            Err("daemon said HTTP 503".to_string())
+        );
+    }
+
+    #[test]
+    fn successful_key_setup_requires_an_ok_envelope() {
+        assert_eq!(parse_setup_key(200, r#"{"ok":true}"#), Ok(()));
+        assert_eq!(
+            parse_setup_key(400, r#"{"ok":false,"error":"invalid key"}"#),
+            Err("invalid key".to_string())
+        );
     }
 }

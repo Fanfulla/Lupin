@@ -43,12 +43,37 @@ pub struct LupinConfig {
     pub agents: BTreeMap<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapIdentity {
+    pub port: u16,
+    pub local_token: String,
+}
+
 pub fn default_config_path() -> Option<PathBuf> {
     config_path_from(
         std::env::var("LUPIN_DIR").ok(),
         std::env::var("LUPIN_CONFIG").ok(),
         dirs_home(),
     )
+}
+
+pub fn bootstrap_identity_from_env() -> Option<BootstrapIdentity> {
+    bootstrap_identity_from(
+        std::env::var("LUPIN_BOOTSTRAP_PORT").ok(),
+        std::env::var("LUPIN_BOOTSTRAP_TOKEN").ok(),
+    )
+}
+
+fn bootstrap_identity_from(
+    port: Option<String>,
+    local_token: Option<String>,
+) -> Option<BootstrapIdentity> {
+    let port = port?.parse::<u16>().ok()?;
+    let local_token = local_token?;
+    if port == 0 || local_token.is_empty() {
+        return None;
+    }
+    Some(BootstrapIdentity { port, local_token })
 }
 
 /// The same precedence the Node side uses (`src/config/config.ts`):
@@ -164,6 +189,44 @@ mod tests {
         // Unknown fields (provider, baseUrl) are ignored on purpose.
         assert_eq!(slot_label(p.slots.get("opus").unwrap()), "k2.5");
         assert_eq!(slot_label(p.slots.get("sonnet").unwrap()), "->other");
+    }
+
+    #[test]
+    fn an_empty_bootstrap_config_parses() {
+        let c: LupinConfig = serde_json::from_str(
+            r#"{"activeProfile":"","port":3456,"localToken":"tok","profiles":{}}"#,
+        )
+        .expect("empty bootstrap config parses");
+        assert_eq!(c.active_profile, "");
+        assert!(c.profiles.is_empty());
+    }
+
+    #[test]
+    fn bootstrap_identity_requires_both_valid_values() {
+        assert_eq!(
+            bootstrap_identity_from(Some("3456".to_string()), Some("tok".to_string())),
+            Some(BootstrapIdentity {
+                port: 3456,
+                local_token: "tok".to_string(),
+            })
+        );
+        assert_eq!(
+            bootstrap_identity_from(Some("3456".to_string()), None),
+            None
+        );
+        assert_eq!(bootstrap_identity_from(None, Some("tok".to_string())), None);
+        assert_eq!(
+            bootstrap_identity_from(Some("0".to_string()), Some("tok".to_string())),
+            None
+        );
+        assert_eq!(
+            bootstrap_identity_from(Some("nope".to_string()), Some("tok".to_string())),
+            None
+        );
+        assert_eq!(
+            bootstrap_identity_from(Some("3456".to_string()), Some(String::new())),
+            None
+        );
     }
 
     #[test]
