@@ -7,9 +7,10 @@
 // `lupin use` performs, so the two surfaces can never disagree for longer
 // than one refresh.
 
-use crate::api::Snapshot;
+use crate::api::{AuthKind, Snapshot};
 use crate::config::slot_label;
 use crate::job::{Job, PALETTE};
+use crate::AddProviderMode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -172,6 +173,7 @@ pub fn render(
     job: Option<&Job>,
     palette: bool,
     agents: Option<&AgentsEdit>,
+    add_provider: Option<&AddProviderMode>,
 ) {
     // The portrait is worth 15 rows only where 15 rows are spare. Below that the
     // hat says the same thing in 4, and below THAT the screen is for facts.
@@ -220,6 +222,111 @@ pub fn render(
     if let Some(edit) = agents {
         render_agents(f, edit, f.area());
     }
+    if let Some(mode) = add_provider {
+        render_add_provider(f, mode, f.area());
+    }
+}
+
+fn render_add_provider(f: &mut Frame, mode: &AddProviderMode, area: Rect) {
+    let area = centred(area, 66, 60);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(" add provider ", bold()));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+
+    let lines = match mode {
+        AddProviderMode::Loading => vec![Line::from(" loading provider catalogue...")],
+        AddProviderMode::List { providers, cursor } => {
+            let mut lines: Vec<Line> = providers
+                .iter()
+                .enumerate()
+                .map(|(index, provider)| {
+                    let auth = match provider.auth_kind {
+                        AuthKind::Oauth => "(OAuth)",
+                        AuthKind::Key => "(API key)",
+                    };
+                    let text = format!(" {}  {auth}", provider.description);
+                    if index == *cursor {
+                        Line::from(Span::styled(
+                            text,
+                            Style::default().add_modifier(Modifier::REVERSED),
+                        ))
+                    } else {
+                        Line::from(text)
+                    }
+                })
+                .collect();
+            if providers.is_empty() {
+                lines.push(Line::from(" no providers available"));
+            }
+            lines.push(Line::from(Span::styled(
+                " arrows/j/k select   enter continue   esc exit",
+                dim(),
+            )));
+            lines
+        }
+        AddProviderMode::ConfirmRisk { provider } => vec![
+            Line::from(Span::styled(&provider.description, bold())),
+            Line::from(provider.suspension_warning.as_deref().unwrap_or_default()),
+            Line::from(""),
+            Line::from(Span::styled(" enter confirm   esc cancel", dim())),
+        ],
+        AddProviderMode::KeyInput {
+            provider,
+            value,
+            submitting,
+        } => {
+            let marker = if value.is_empty() {
+                "".to_string()
+            } else {
+                "********".to_string()
+            };
+            let state = if *submitting { "  submitting..." } else { "" };
+            vec![
+                Line::from(Span::styled(&provider.description, bold())),
+                Line::from(format!(" API key: {marker}{state}")),
+                Line::from(Span::styled(
+                    " type key   backspace edit   enter submit   esc cancel",
+                    dim(),
+                )),
+            ]
+        }
+        AddProviderMode::OAuthWaiting { provider, url, .. } => {
+            let mut lines = vec![
+                Line::from(Span::styled(&provider.description, bold())),
+                Line::from(" Open in your browser to continue"),
+            ];
+            if let Some(url) = url {
+                lines.push(Line::from(url.as_str()));
+            } else {
+                lines.push(Line::from(Span::styled(" waiting for login URL...", dim())));
+            }
+            lines.push(Line::from(Span::styled(" esc returns to providers", dim())));
+            lines
+        }
+        AddProviderMode::Success(message) => vec![
+            Line::from(Span::styled(message, Style::default().fg(Color::Green))),
+            Line::from(Span::styled(" enter or esc closes", dim())),
+        ],
+        AddProviderMode::Error {
+            message,
+            return_to_list,
+        } => vec![
+            Line::from(Span::styled(message, Style::default().fg(Color::Red))),
+            Line::from(Span::styled(
+                if *return_to_list {
+                    " enter or esc returns to providers"
+                } else {
+                    " esc exits"
+                },
+                dim(),
+            )),
+        ],
+    };
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 /// The agents-mode overlay: one row per route, target by name (the same
@@ -422,10 +529,14 @@ fn render_header(f: &mut Frame, snap: &Snapshot, area: Rect, art: &[&str]) {
             Span::styled(format!("  v{VERSION}"), dim()),
             Span::styled("   the gentleman router", dim()),
         ]),
-        if snap.config.is_none() {
+        if snap
+            .config
+            .as_ref()
+            .is_none_or(|config| config.profiles.is_empty())
+        {
             Line::from(Span::styled(
-                "no config: run `lupin init` first",
-                Style::default().fg(Color::Red),
+                "no providers yet: add one below",
+                Style::default().fg(Color::Yellow),
             ))
         } else if daemon_up {
             Line::from(vec![
@@ -703,8 +814,9 @@ fn render_keys(f: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{Health, Snapshot, Tier};
+    use crate::api::{AuthKind, Health, ProviderRow, Snapshot, Tier};
     use crate::config::LupinConfig;
+    use crate::AddProviderMode;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::collections::BTreeMap;
@@ -722,7 +834,7 @@ mod tests {
 
     fn screen_sel(snap: &Snapshot, message: &str, selected: usize) -> String {
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, snap, message, selected, None, false, None))
+        term.draw(|f| render(f, snap, message, selected, None, false, None, None))
             .expect("draw");
         term.backend()
             .buffer()
@@ -730,6 +842,117 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect::<String>()
+    }
+
+    fn provider(id: &str, description: &str, auth_kind: AuthKind) -> ProviderRow {
+        ProviderRow {
+            id: id.to_string(),
+            description: description.to_string(),
+            auth_kind,
+            suspension_warning: None,
+        }
+    }
+
+    fn add_provider_screen(mode: &AddProviderMode) -> String {
+        let snap = Snapshot {
+            config: None,
+            health: None,
+            recent: Vec::new(),
+            profile_names: Vec::new(),
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, Some(mode)))
+            .expect("draw");
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn add_provider_loading_explains_what_is_happening() {
+        let out = add_provider_screen(&AddProviderMode::Loading);
+        assert!(out.contains("add provider"), "{out}");
+        assert!(out.contains("loading"), "{out}");
+    }
+
+    #[test]
+    fn add_provider_list_uses_catalogue_labels_and_auth_kinds() {
+        let out = add_provider_screen(&AddProviderMode::List {
+            providers: vec![
+                provider("catalogue-a", "Catalogue Alpha", AuthKind::Oauth),
+                provider("catalogue-b", "Catalogue Beta", AuthKind::Key),
+            ],
+            cursor: 0,
+        });
+        assert!(out.contains("Catalogue Alpha"), "{out}");
+        assert!(out.contains("Catalogue Beta"), "{out}");
+        assert!(out.contains("(OAuth)"), "{out}");
+        assert!(out.contains("(API key)"), "{out}");
+    }
+
+    #[test]
+    fn add_provider_risk_warning_requires_confirmation_before_login() {
+        let mut row = provider("catalogue-risk", "Catalogue Risk", AuthKind::Oauth);
+        row.suspension_warning = Some("Using OAuth may suspend this account".to_string());
+        let out = add_provider_screen(&AddProviderMode::ConfirmRisk { provider: row });
+        assert!(
+            out.contains("Using OAuth may suspend this account"),
+            "{out}"
+        );
+        assert!(out.contains("enter confirm"), "{out}");
+        assert!(out.contains("esc cancel"), "{out}");
+    }
+
+    #[test]
+    fn add_provider_key_input_masks_every_character_and_never_draws_plaintext() {
+        let out = add_provider_screen(&AddProviderMode::KeyInput {
+            provider: provider("catalogue-key", "Catalogue Key", AuthKind::Key),
+            value: "secret-value".to_string(),
+            submitting: false,
+        });
+        assert!(out.contains("API key: ********"), "{out}");
+        assert!(!out.contains("secret-value"), "{out}");
+    }
+
+    #[test]
+    fn add_provider_key_submission_is_visible_without_revealing_the_key() {
+        let out = add_provider_screen(&AddProviderMode::KeyInput {
+            provider: provider("catalogue-key", "Catalogue Key", AuthKind::Key),
+            value: "secret-value".to_string(),
+            submitting: true,
+        });
+        assert!(out.contains("submitting"), "{out}");
+        assert!(!out.contains("secret-value"), "{out}");
+    }
+
+    #[test]
+    fn add_provider_oauth_waiting_shows_browser_guidance_and_url() {
+        let out = add_provider_screen(&AddProviderMode::OAuthWaiting {
+            provider: provider("catalogue-oauth", "Catalogue OAuth", AuthKind::Oauth),
+            job: "job-7".to_string(),
+            url: Some("https://auth.example/start".to_string()),
+        });
+        assert!(out.contains("Open in your browser"), "{out}");
+        assert!(out.contains("https://auth.example/start"), "{out}");
+        assert!(!out.contains("job-7"), "{out}");
+    }
+
+    #[test]
+    fn add_provider_success_announces_completion() {
+        let out = add_provider_screen(&AddProviderMode::Success("provider added".to_string()));
+        assert!(out.contains("provider added"), "{out}");
+    }
+
+    #[test]
+    fn add_provider_error_surfaces_the_daemon_message() {
+        let out = add_provider_screen(&AddProviderMode::Error {
+            message: "invalid key".to_string(),
+            return_to_list: true,
+        });
+        assert!(out.contains("invalid key"), "{out}");
     }
 
     /// The agents-mode overlay, drawn on top of the dashboard (ADR-47).
@@ -749,7 +972,7 @@ mod tests {
             cursor: 0,
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, Some(&edit)))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, Some(&edit), None))
             .expect("draw");
         let out = term
             .backend()
@@ -836,7 +1059,7 @@ mod tests {
             profile_names: Vec::new(),
         };
         let out = screen(&snap);
-        assert!(out.contains("no config"), "{out}");
+        assert!(out.contains("no providers yet: add one below"), "{out}");
     }
 
     #[test]
@@ -849,7 +1072,7 @@ mod tests {
             profile_names: vec!["kimi-sub".to_string()],
         };
         let mut term = Terminal::new(TestBackend::new(20, 4)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, None))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None))
             .expect("draw on a cramped screen");
     }
 
@@ -938,7 +1161,7 @@ mod tests {
     /// the cursor highlight, drawn on the selected row.
     fn any_reversed(snap: &Snapshot, selected: usize) -> bool {
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, snap, "ready", selected, None, false, None))
+        term.draw(|f| render(f, snap, "ready", selected, None, false, None, None))
             .expect("draw");
         term.backend()
             .buffer()
@@ -1009,7 +1232,7 @@ mod tests {
         // The reversed cell's vertical position changes with `selected`.
         let y_of = |selected: usize| {
             let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-            term.draw(|f| render(f, &snap, "ready", selected, None, false, None))
+            term.draw(|f| render(f, &snap, "ready", selected, None, false, None, None))
                 .expect("draw");
             let buf = term.backend().buffer();
             let width = buf.area().width as usize;

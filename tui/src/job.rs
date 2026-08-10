@@ -199,10 +199,8 @@ impl PaletteEntry {
 
 /// What the palette offers, and what it refuses to pretend about.
 ///
-/// Three commands cannot be hosted by a dashboard and saying so beats a row
-/// that hangs: `init` reads hidden input, `login` opens a browser and waits for
-/// the user to come back, and `run`/`go`/`resume` hand the terminal to Claude
-/// Code, which needs to own it.
+/// Commands that hand the terminal to Claude Code cannot be hosted by the
+/// dashboard, and saying so beats a row that hangs.
 pub const PALETTE: &[PaletteEntry] = &[
     PaletteEntry {
         key: 'd',
@@ -233,18 +231,6 @@ pub const PALETTE: &[PaletteEntry] = &[
         label: "stop the daemon",
         args: &["stop"],
         why_not: "",
-    },
-    PaletteEntry {
-        key: 'i',
-        label: "init",
-        args: &[],
-        why_not: "a wizard with hidden input: run `lupin init` in a shell",
-    },
-    PaletteEntry {
-        key: 'g',
-        label: "login",
-        args: &[],
-        why_not: "opens a browser and waits: run `lupin login <provider>` in a shell",
     },
     PaletteEntry {
         key: 'c',
@@ -295,6 +281,7 @@ mod tests {
     #[test]
     fn every_palette_key_is_unique() {
         let mut keys: Vec<char> = PALETTE.iter().map(|e| e.key).collect();
+        assert_eq!(keys, vec!['d', 'u', 'l', 's', 'x', 'c']);
         keys.sort_unstable();
         let before = keys.len();
         keys.dedup();
@@ -313,6 +300,7 @@ mod tests {
                     e.label
                 );
             } else {
+                assert_eq!(e.label, "run claude");
                 assert!(
                     e.args.is_empty(),
                     "{} has arguments but is not runnable",

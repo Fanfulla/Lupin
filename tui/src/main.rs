@@ -27,6 +27,32 @@ use std::time::{Duration, Instant};
 
 const REFRESH: Duration = Duration::from_secs(1);
 
+pub(crate) enum AddProviderMode {
+    Loading,
+    List {
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+    },
+    ConfirmRisk {
+        provider: api::ProviderRow,
+    },
+    KeyInput {
+        provider: api::ProviderRow,
+        value: String,
+        submitting: bool,
+    },
+    OAuthWaiting {
+        provider: api::ProviderRow,
+        job: String,
+        url: Option<String>,
+    },
+    Success(String),
+    Error {
+        message: String,
+        return_to_list: bool,
+    },
+}
+
 fn main() -> io::Result<()> {
     // --version / no-config short-circuits, kept out of the alternate screen.
     if std::env::args().any(|a| a == "--version" || a == "-V") {
@@ -97,10 +123,25 @@ fn run(
     // routes, None otherwise. Applied atomically through the control API on
     // Enter, thrown away on Esc.
     let mut agents_edit: Option<ui::AgentsEdit> = None;
+    let mut add_provider = needs_provider(&snap).then_some(AddProviderMode::Loading);
     loop {
         if last.elapsed() >= REFRESH {
             snap = api::snapshot(cfg_path, bootstrap_identity);
+            poll_provider_login(
+                &mut add_provider,
+                &mut snap,
+                cfg_path,
+                bootstrap_identity,
+                &mut message,
+            );
+            if matches!(add_provider, Some(AddProviderMode::Success(_))) && !needs_provider(&snap) {
+                add_provider = None;
+                message = "provider added".to_string();
+            }
             last = Instant::now();
+        }
+        if matches!(add_provider, Some(AddProviderMode::Loading)) {
+            add_provider = Some(load_providers(&snap, bootstrap_identity));
         }
         // Drained every tick, before the draw, so the panel shows what arrived.
         if let Some(j) = job.as_mut() {
@@ -125,6 +166,7 @@ fn run(
                 job.as_ref(),
                 palette,
                 agents_edit.as_ref(),
+                add_provider.as_ref(),
             )
         })?;
 
@@ -132,6 +174,21 @@ fn run(
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                if let Some(mode) = add_provider.take() {
+                    match handle_add_provider_key(
+                        mode,
+                        key.code,
+                        &snap,
+                        bootstrap_identity,
+                        cfg_path,
+                        &mut message,
+                    ) {
+                        AddProviderAction::Stay(mode) => add_provider = Some(mode),
+                        AddProviderAction::Dashboard(new_snap) => snap = new_snap,
+                        AddProviderAction::Exit => return Ok(()),
+                    }
                     continue;
                 }
                 // The palette swallows its keys first, like order mode: a
@@ -344,6 +401,305 @@ fn run(
     }
 }
 
+enum AddProviderAction {
+    Stay(AddProviderMode),
+    Dashboard(api::Snapshot),
+    Exit,
+}
+
+fn needs_provider(snap: &api::Snapshot) -> bool {
+    snap.config
+        .as_ref()
+        .is_none_or(|config| config.profiles.is_empty())
+}
+
+fn onboarding_identity(
+    snap: &api::Snapshot,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+) -> Option<config::BootstrapIdentity> {
+    snap.config
+        .as_ref()
+        .map(|config| config::BootstrapIdentity {
+            port: config.port,
+            local_token: config.local_token.clone(),
+        })
+        .or_else(|| bootstrap_identity.cloned())
+}
+
+fn onboarding_error(error: String) -> String {
+    if error.starts_with("daemon not answering") {
+        "daemon not answering: restart with `lupin`".to_string()
+    } else {
+        error
+    }
+}
+
+fn load_providers(
+    snap: &api::Snapshot,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+) -> AddProviderMode {
+    let Some(identity) = onboarding_identity(snap, bootstrap_identity) else {
+        return AddProviderMode::Error {
+            message: "daemon not answering: restart with `lupin`".to_string(),
+            return_to_list: false,
+        };
+    };
+    match api::fetch_providers(&identity) {
+        Ok(providers) => AddProviderMode::List {
+            providers,
+            cursor: 0,
+        },
+        Err(error) => AddProviderMode::Error {
+            message: onboarding_error(error),
+            return_to_list: false,
+        },
+    }
+}
+
+fn start_provider_login(
+    provider: api::ProviderRow,
+    accept_risk: bool,
+    snap: &api::Snapshot,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+) -> AddProviderMode {
+    let Some(identity) = onboarding_identity(snap, bootstrap_identity) else {
+        return AddProviderMode::Error {
+            message: "daemon not answering: restart with `lupin`".to_string(),
+            return_to_list: true,
+        };
+    };
+    match api::start_login(&identity, &provider.id, accept_risk) {
+        Ok(job) => AddProviderMode::OAuthWaiting {
+            provider,
+            job,
+            url: None,
+        },
+        Err(error) => AddProviderMode::Error {
+            message: onboarding_error(error),
+            return_to_list: true,
+        },
+    }
+}
+
+fn clear_cancelled_key(value: &mut String) {
+    value.clear();
+}
+
+fn redact_key_from_error(error: &str, key: &str) -> String {
+    if key.is_empty() {
+        error.to_string()
+    } else {
+        error.replace(key, "********")
+    }
+}
+
+fn submit_provider_key(
+    provider_id: &str,
+    value: &mut String,
+    snap: &api::Snapshot,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+) -> Result<(), String> {
+    let result = onboarding_identity(snap, bootstrap_identity)
+        .ok_or_else(|| "daemon not answering: restart with `lupin`".to_string())
+        .and_then(|identity| api::setup_key(&identity, provider_id, value))
+        .map_err(|error| redact_key_from_error(&error, value));
+    value.clear();
+    result
+}
+
+fn handle_add_provider_key(
+    mode: AddProviderMode,
+    key: KeyCode,
+    snap: &api::Snapshot,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+    cfg_path: &std::path::Path,
+    message: &mut String,
+) -> AddProviderAction {
+    match mode {
+        AddProviderMode::Loading => AddProviderAction::Stay(AddProviderMode::Loading),
+        AddProviderMode::List {
+            providers,
+            mut cursor,
+        } => match key {
+            KeyCode::Esc => AddProviderAction::Exit,
+            KeyCode::Up | KeyCode::Char('k') => {
+                cursor = cursor.saturating_sub(1);
+                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if cursor + 1 < providers.len() {
+                    cursor += 1;
+                }
+                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+            }
+            KeyCode::Enter => {
+                let Some(provider) = providers.get(cursor).cloned() else {
+                    return AddProviderAction::Stay(AddProviderMode::List { providers, cursor });
+                };
+                match provider.auth_kind {
+                    api::AuthKind::Key => AddProviderAction::Stay(AddProviderMode::KeyInput {
+                        provider,
+                        value: String::new(),
+                        submitting: false,
+                    }),
+                    api::AuthKind::Oauth if provider.suspension_warning.is_some() => {
+                        AddProviderAction::Stay(AddProviderMode::ConfirmRisk { provider })
+                    }
+                    api::AuthKind::Oauth => AddProviderAction::Stay(start_provider_login(
+                        provider,
+                        false,
+                        snap,
+                        bootstrap_identity,
+                    )),
+                }
+            }
+            _ => AddProviderAction::Stay(AddProviderMode::List { providers, cursor }),
+        },
+        AddProviderMode::ConfirmRisk { provider } => match key {
+            KeyCode::Enter => AddProviderAction::Stay(start_provider_login(
+                provider,
+                true,
+                snap,
+                bootstrap_identity,
+            )),
+            KeyCode::Esc => {
+                *message = "OAuth login cancelled".to_string();
+                AddProviderAction::Stay(AddProviderMode::Loading)
+            }
+            _ => AddProviderAction::Stay(AddProviderMode::ConfirmRisk { provider }),
+        },
+        AddProviderMode::KeyInput {
+            provider,
+            mut value,
+            submitting,
+        } => match key {
+            KeyCode::Esc => {
+                clear_cancelled_key(&mut value);
+                *message = "API key entry cancelled".to_string();
+                AddProviderAction::Stay(AddProviderMode::Loading)
+            }
+            KeyCode::Backspace if !submitting => {
+                value.pop();
+                AddProviderAction::Stay(AddProviderMode::KeyInput {
+                    provider,
+                    value,
+                    submitting: false,
+                })
+            }
+            KeyCode::Char(character) if !submitting => {
+                value.push(character);
+                AddProviderAction::Stay(AddProviderMode::KeyInput {
+                    provider,
+                    value,
+                    submitting: false,
+                })
+            }
+            KeyCode::Enter if !submitting => {
+                let result =
+                    submit_provider_key(&provider.id, &mut value, snap, bootstrap_identity);
+                match result {
+                    Ok(()) => {
+                        let refreshed = api::snapshot(cfg_path, bootstrap_identity);
+                        *message = "provider added".to_string();
+                        if needs_provider(&refreshed) {
+                            AddProviderAction::Stay(AddProviderMode::Success(
+                                "provider added".to_string(),
+                            ))
+                        } else {
+                            AddProviderAction::Dashboard(refreshed)
+                        }
+                    }
+                    Err(error) => AddProviderAction::Stay(AddProviderMode::Error {
+                        message: onboarding_error(error),
+                        return_to_list: true,
+                    }),
+                }
+            }
+            _ => AddProviderAction::Stay(AddProviderMode::KeyInput {
+                provider,
+                value,
+                submitting,
+            }),
+        },
+        AddProviderMode::OAuthWaiting { provider, job, url } => match key {
+            KeyCode::Esc => {
+                *message = "OAuth login hidden; the daemon may still finish it".to_string();
+                AddProviderAction::Stay(AddProviderMode::Loading)
+            }
+            _ => AddProviderAction::Stay(AddProviderMode::OAuthWaiting { provider, job, url }),
+        },
+        AddProviderMode::Success(message_text) => match key {
+            KeyCode::Enter | KeyCode::Esc => AddProviderAction::Exit,
+            _ => AddProviderAction::Stay(AddProviderMode::Success(message_text)),
+        },
+        AddProviderMode::Error {
+            message: error,
+            return_to_list,
+        } => match key {
+            KeyCode::Enter | KeyCode::Esc if return_to_list => {
+                AddProviderAction::Stay(AddProviderMode::Loading)
+            }
+            KeyCode::Esc => AddProviderAction::Exit,
+            _ => AddProviderAction::Stay(AddProviderMode::Error {
+                message: error,
+                return_to_list,
+            }),
+        },
+    }
+}
+
+fn poll_provider_login(
+    add_provider: &mut Option<AddProviderMode>,
+    snap: &mut api::Snapshot,
+    cfg_path: &std::path::Path,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+    message: &mut String,
+) {
+    let Some(AddProviderMode::OAuthWaiting { .. }) = add_provider else {
+        return;
+    };
+    let Some(AddProviderMode::OAuthWaiting {
+        provider,
+        job,
+        mut url,
+    }) = add_provider.take()
+    else {
+        return;
+    };
+    let result = onboarding_identity(snap, bootstrap_identity)
+        .ok_or_else(|| "daemon not answering: restart with `lupin`".to_string())
+        .and_then(|identity| api::poll_login(&identity, &job));
+    *add_provider = Some(match result {
+        Ok(poll) if poll.status == api::LoginStatus::Pending => {
+            if poll.message.is_some() {
+                url = poll.message;
+            }
+            AddProviderMode::OAuthWaiting { provider, job, url }
+        }
+        Ok(poll) if poll.status == api::LoginStatus::Done => {
+            *snap = api::snapshot(cfg_path, bootstrap_identity);
+            *message = "provider added".to_string();
+            if needs_provider(snap) {
+                AddProviderMode::Success("provider added".to_string())
+            } else {
+                *add_provider = None;
+                return;
+            }
+        }
+        Ok(poll) => AddProviderMode::Error {
+            message: poll
+                .error
+                .or(poll.message)
+                .unwrap_or_else(|| "login failed".to_string()),
+            return_to_list: true,
+        },
+        Err(error) => AddProviderMode::Error {
+            message: onboarding_error(error),
+            return_to_list: true,
+        },
+    });
+}
+
 /// Start a CLI command, or say why it could not start. A dashboard that shows
 /// an empty panel when the binary is missing is worse than one that says so.
 fn start_job(slot: &mut Option<job::Job>, label: &str, args: &[String]) -> String {
@@ -430,7 +786,106 @@ fn clamp_selected(selected: &mut usize, len: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_rows, agents_table, clamp_selected, order_message, push_pick};
+    use super::{
+        agent_rows, agents_table, clamp_selected, clear_cancelled_key, handle_add_provider_key,
+        onboarding_error, order_message, push_pick, redact_key_from_error, submit_provider_key,
+        AddProviderAction, AddProviderMode,
+    };
+    use crate::api::{AuthKind, ProviderRow, Snapshot};
+    use crossterm::event::KeyCode;
+
+    fn empty_snapshot() -> Snapshot {
+        Snapshot {
+            config: None,
+            health: None,
+            recent: Vec::new(),
+            profile_names: Vec::new(),
+        }
+    }
+
+    fn provider(auth_kind: AuthKind) -> ProviderRow {
+        ProviderRow {
+            id: "catalogue-row".to_string(),
+            description: "Catalogue Row".to_string(),
+            auth_kind,
+            suspension_warning: None,
+        }
+    }
+
+    #[test]
+    fn cancelling_key_entry_clears_the_sensitive_buffer() {
+        let mut value = "secret-value".to_string();
+        clear_cancelled_key(&mut value);
+        assert!(value.is_empty());
+    }
+
+    #[test]
+    fn failed_key_submission_clears_the_sensitive_buffer() {
+        let snap = empty_snapshot();
+        let mut value = "secret-value".to_string();
+        assert_eq!(
+            submit_provider_key("catalogue-key", &mut value, &snap, None),
+            Err("daemon not answering: restart with `lupin`".to_string())
+        );
+        assert!(value.is_empty());
+    }
+
+    #[test]
+    fn daemon_errors_cannot_echo_the_submitted_key() {
+        assert_eq!(
+            redact_key_from_error("invalid key: secret-value", "secret-value"),
+            "invalid key: ********"
+        );
+    }
+
+    #[test]
+    fn oauth_warning_enters_confirmation_without_starting_login() {
+        let mut row = provider(AuthKind::Oauth);
+        row.suspension_warning = Some("Account suspension risk".to_string());
+        let action = handle_add_provider_key(
+            AddProviderMode::List {
+                providers: vec![row],
+                cursor: 0,
+            },
+            KeyCode::Enter,
+            &empty_snapshot(),
+            None,
+            std::path::Path::new(""),
+            &mut String::new(),
+        );
+        assert!(matches!(
+            action,
+            AddProviderAction::Stay(AddProviderMode::ConfirmRisk { .. })
+        ));
+    }
+
+    #[test]
+    fn backspace_removes_one_unicode_scalar_from_key_input() {
+        let action = handle_add_provider_key(
+            AddProviderMode::KeyInput {
+                provider: provider(AuthKind::Key),
+                value: "clé🔑".to_string(),
+                submitting: false,
+            },
+            KeyCode::Backspace,
+            &empty_snapshot(),
+            None,
+            std::path::Path::new(""),
+            &mut String::new(),
+        );
+        let AddProviderAction::Stay(AddProviderMode::KeyInput { value, .. }) = action else {
+            panic!("key input must stay active");
+        };
+        assert_eq!(value, "clé");
+    }
+
+    #[test]
+    fn onboarding_transport_errors_use_bootstrap_restart_guidance() {
+        assert_eq!(
+            onboarding_error("daemon not answering (old guidance)".to_string()),
+            "daemon not answering: restart with `lupin`"
+        );
+    }
 
     #[test]
     fn a_pick_out_of_range_or_repeated_answers_in_words() {
