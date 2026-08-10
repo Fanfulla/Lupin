@@ -4,7 +4,11 @@
 // never a dead end and never depends on a native binary to be useful.
 
 import { spawn } from 'node:child_process';
-import { loadConfig } from '../config/config.js';
+import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { defaultConfigPath, loadConfig } from '../config/config.js';
+import { ensureBootstrapDaemon } from '../server/daemon.js';
+import type { BootstrapIdentity } from './login.js';
 import { statusCommand } from './daemonctl.js';
 
 const TUI_BIN = process.platform === 'win32' ? 'lupin-tui.exe' : 'lupin-tui';
@@ -30,28 +34,76 @@ async function tuiAvailable(): Promise<boolean> {
   });
 }
 
-export async function hubCommand(): Promise<number> {
-  // Ensure there is something to show at all.
-  try {
-    loadConfig();
-  } catch {
-    console.error('no config yet: run `lupin init` first');
-    return 1;
+async function spawnTui(env: NodeJS.ProcessEnv): Promise<number> {
+  return await new Promise((resolve) => {
+    const child = spawn(TUI_BIN, [], { env, stdio: 'inherit', shell: process.platform === 'win32' });
+    child.on('error', () => resolve(1));
+    child.on('exit', (code) => resolve(code ?? 0));
+  });
+}
+
+export interface HubDeps {
+  isTTY: boolean;
+  configExists: () => boolean;
+  loadConfig: () => unknown;
+  tuiAvailable: () => Promise<boolean>;
+  startBootstrap: (identity: BootstrapIdentity) => Promise<'already-running' | 'started'>;
+  spawnTui: (env: NodeJS.ProcessEnv) => Promise<number>;
+  statusCommand: () => Promise<number>;
+  randomToken: () => string;
+  env: NodeJS.ProcessEnv;
+  error: (message: string) => void;
+}
+
+const NO_CONFIG = 'no config yet: run `lupin init` first';
+
+export async function hubCommandWith(deps: HubDeps): Promise<number> {
+  const configured = deps.configExists();
+  if (configured) {
+    try {
+      deps.loadConfig();
+    } catch {
+      deps.error(NO_CONFIG);
+      return 1;
+    }
   }
 
-  if (process.stdout.isTTY && (await tuiAvailable())) {
-    return await new Promise((resolve) => {
-      const child = spawn(TUI_BIN, [], { stdio: 'inherit', shell: process.platform === 'win32' });
-      child.on('error', () => resolve(1));
-      child.on('exit', (code) => resolve(code ?? 0));
+  if (deps.isTTY && (await deps.tuiAvailable())) {
+    if (configured) return await deps.spawnTui(deps.env);
+    const identity: BootstrapIdentity = { port: 3456, localToken: deps.randomToken() };
+    await deps.startBootstrap(identity);
+    return await deps.spawnTui({
+      ...deps.env,
+      LUPIN_BOOTSTRAP_PORT: String(identity.port),
+      LUPIN_BOOTSTRAP_TOKEN: identity.localToken,
     });
   }
 
+  if (!configured) {
+    deps.error(NO_CONFIG);
+    return 1;
+  }
+
   // Fallback: status plus the next moves, never a bare usage dump.
-  await statusCommand();
+  await deps.statusCommand();
   console.log('');
   console.log('next:  lupin go -- claude     (switch + run in one step)');
   console.log('       lupin top             (live console, no sidecar needed)');
   console.log('       lupin --help           (every command)');
   return 0;
+}
+
+export async function hubCommand(): Promise<number> {
+  return await hubCommandWith({
+    isTTY: process.stdout.isTTY === true,
+    configExists: () => existsSync(defaultConfigPath()),
+    loadConfig,
+    tuiAvailable,
+    startBootstrap: ensureBootstrapDaemon,
+    spawnTui,
+    statusCommand,
+    randomToken: () => randomBytes(24).toString('hex'),
+    env: process.env,
+    error: console.error,
+  });
 }

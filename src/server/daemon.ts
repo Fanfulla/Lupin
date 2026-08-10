@@ -7,6 +7,35 @@ import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadConfig, validateConfig, type LupinConfig } from '../config/config.js';
+
+type DaemonIdentity = Pick<LupinConfig, 'port' | 'localToken'>;
+
+export function bootstrapDaemonEnv(identity: DaemonIdentity): Record<string, string> {
+  return {
+    LUPIN_BOOTSTRAP_PORT: String(identity.port),
+    LUPIN_BOOTSTRAP_TOKEN: identity.localToken,
+  };
+}
+
+export function initialDaemonConfig(
+  configPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+  load: (path: string) => LupinConfig = loadConfig,
+): { config: LupinConfig; bootstrap: boolean } {
+  const port = env.LUPIN_BOOTSTRAP_PORT;
+  const localToken = env.LUPIN_BOOTSTRAP_TOKEN;
+  if (port === undefined && localToken === undefined) return { config: load(configPath), bootstrap: false };
+  return {
+    bootstrap: true,
+    config: validateConfig({
+      activeProfile: '',
+      port: Number(port),
+      localToken: localToken ?? '',
+      profiles: {},
+    }),
+  };
+}
 
 export function lupinDir(): string {
   return process.env.LUPIN_DIR ?? join(homedir(), '.lupin');
@@ -63,6 +92,17 @@ function pidRunning(pid: number): boolean {
 
 /** Start the server detached if not already answering. Returns how it ended up alive. */
 export async function ensureDaemon(port: number): Promise<'already-running' | 'started'> {
+  return await ensureDaemonWith(port);
+}
+
+export async function ensureBootstrapDaemon(identity: DaemonIdentity): Promise<'already-running' | 'started'> {
+  return await ensureDaemonWith(identity.port, bootstrapDaemonEnv(identity));
+}
+
+async function ensureDaemonWith(
+  port: number,
+  serverEnv?: Record<string, string>,
+): Promise<'already-running' | 'started'> {
   if (await serverAlive(port)) {
     // §6.4 respawn gap (audit 2026-07-22): a watchdog that died while the
     // daemon lived was never replaced: every run verifies it, not just the
@@ -81,6 +121,7 @@ export async function ensureDaemon(port: number): Promise<'already-running' | 's
     cwd: pkgRoot,
     detached: true,
     stdio: ['ignore', out, out],
+    ...(serverEnv === undefined ? {} : { env: { ...process.env, ...serverEnv } }),
   });
   child.unref();
   if (child.pid !== undefined) writeFileSync(pidfilePath(), String(child.pid));

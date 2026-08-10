@@ -11,7 +11,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { networkError } from '../src/core/errors.js';
-import { ensureWatchdog, entrypointArgs, pidfilePath, watchdogPidfilePath } from '../src/server/daemon.js';
+import {
+  bootstrapDaemonEnv,
+  ensureWatchdog,
+  entrypointArgs,
+  initialDaemonConfig,
+  pidfilePath,
+  watchdogPidfilePath,
+} from '../src/server/daemon.js';
 import { DAEMON_DOWN_MESSAGE, holdPortDown } from '../src/server/watchdog.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'lupin-watchdog-'));
@@ -199,5 +206,42 @@ describe('entrypointArgs (dev vs dist spawn)', () => {
     const args = [...entrypointArgs('file:///C:/pkg/dist/server/daemon.js', './watchdog.ts'), '4100'];
     expect(args[0]).toMatch(/watchdog\.js$/);
     expect(args[1]).toBe('4100');
+  });
+});
+
+describe('bootstrap daemon entry contract', () => {
+  it('passes the bootstrap identity only through child environment variables', () => {
+    expect(bootstrapDaemonEnv({ port: 4567, localToken: 'ephemeral-token' })).toEqual({
+      LUPIN_BOOTSTRAP_PORT: '4567',
+      LUPIN_BOOTSTRAP_TOKEN: 'ephemeral-token',
+    });
+  });
+
+  it('validates an environment-supplied zero-profile config instead of reading a missing file', () => {
+    const load = () => {
+      throw new Error('must not read config');
+    };
+    expect(
+      initialDaemonConfig('missing.json', {
+        LUPIN_BOOTSTRAP_PORT: '4567',
+        LUPIN_BOOTSTRAP_TOKEN: 'ephemeral-token',
+      }, load),
+    ).toEqual({
+      bootstrap: true,
+      config: { activeProfile: '', port: 4567, localToken: 'ephemeral-token', profiles: {} },
+    });
+  });
+
+  it('keeps normal startup file-backed when no bootstrap environment is supplied', () => {
+    const loaded = {
+      activeProfile: 'test',
+      port: 4567,
+      localToken: 'configured-token',
+      profiles: {},
+    };
+    expect(initialDaemonConfig('config.json', {}, (path) => ({ ...loaded, activeProfile: path }))).toEqual({
+      bootstrap: false,
+      config: { ...loaded, activeProfile: 'config.json' },
+    });
   });
 });
