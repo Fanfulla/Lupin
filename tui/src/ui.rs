@@ -268,26 +268,23 @@ fn render_add_provider(f: &mut Frame, mode: &AddProviderMode, area: Rect) {
             )));
             lines
         }
-        AddProviderMode::ConfirmRisk { provider } => vec![
+        AddProviderMode::ConfirmRisk { provider, .. } => vec![
             Line::from(Span::styled(&provider.description, bold())),
             Line::from(provider.suspension_warning.as_deref().unwrap_or_default()),
             Line::from(""),
             Line::from(Span::styled(" enter confirm   esc cancel", dim())),
         ],
         AddProviderMode::KeyInput {
-            provider,
-            value,
-            submitting,
+            provider, value, ..
         } => {
             let marker = if value.is_empty() {
                 "".to_string()
             } else {
                 "********".to_string()
             };
-            let state = if *submitting { "  submitting..." } else { "" };
             vec![
                 Line::from(Span::styled(&provider.description, bold())),
-                Line::from(format!(" API key: {marker}{state}")),
+                Line::from(format!(" API key: {marker}")),
                 Line::from(Span::styled(
                     " type key   backspace edit   enter submit   esc cancel",
                     dim(),
@@ -309,11 +306,12 @@ fn render_add_provider(f: &mut Frame, mode: &AddProviderMode, area: Rect) {
         }
         AddProviderMode::Success(message) => vec![
             Line::from(Span::styled(message, Style::default().fg(Color::Green))),
-            Line::from(Span::styled(" enter or esc closes", dim())),
+            Line::from(Span::styled(" waiting for dashboard refresh...", dim())),
         ],
         AddProviderMode::Error {
             message,
             return_to_list,
+            ..
         } => vec![
             Line::from(Span::styled(message, Style::default().fg(Color::Red))),
             Line::from(Span::styled(
@@ -897,7 +895,11 @@ mod tests {
     fn add_provider_risk_warning_requires_confirmation_before_login() {
         let mut row = provider("catalogue-risk", "Catalogue Risk", AuthKind::Oauth);
         row.suspension_warning = Some("Using OAuth may suspend this account".to_string());
-        let out = add_provider_screen(&AddProviderMode::ConfirmRisk { provider: row });
+        let out = add_provider_screen(&AddProviderMode::ConfirmRisk {
+            provider: row,
+            providers: Vec::new(),
+            cursor: 0,
+        });
         assert!(
             out.contains("Using OAuth may suspend this account"),
             "{out}"
@@ -910,21 +912,11 @@ mod tests {
     fn add_provider_key_input_masks_every_character_and_never_draws_plaintext() {
         let out = add_provider_screen(&AddProviderMode::KeyInput {
             provider: provider("catalogue-key", "Catalogue Key", AuthKind::Key),
+            providers: Vec::new(),
+            cursor: 0,
             value: "secret-value".to_string(),
-            submitting: false,
         });
         assert!(out.contains("API key: ********"), "{out}");
-        assert!(!out.contains("secret-value"), "{out}");
-    }
-
-    #[test]
-    fn add_provider_key_submission_is_visible_without_revealing_the_key() {
-        let out = add_provider_screen(&AddProviderMode::KeyInput {
-            provider: provider("catalogue-key", "Catalogue Key", AuthKind::Key),
-            value: "secret-value".to_string(),
-            submitting: true,
-        });
-        assert!(out.contains("submitting"), "{out}");
         assert!(!out.contains("secret-value"), "{out}");
     }
 
@@ -932,6 +924,8 @@ mod tests {
     fn add_provider_oauth_waiting_shows_browser_guidance_and_url() {
         let out = add_provider_screen(&AddProviderMode::OAuthWaiting {
             provider: provider("catalogue-oauth", "Catalogue OAuth", AuthKind::Oauth),
+            providers: Vec::new(),
+            cursor: 0,
             job: "job-7".to_string(),
             url: Some("https://auth.example/start".to_string()),
         });
@@ -944,12 +938,16 @@ mod tests {
     fn add_provider_success_announces_completion() {
         let out = add_provider_screen(&AddProviderMode::Success("provider added".to_string()));
         assert!(out.contains("provider added"), "{out}");
+        assert!(out.contains("waiting for dashboard refresh"), "{out}");
+        assert!(!out.contains("closes"), "{out}");
     }
 
     #[test]
     fn add_provider_error_surfaces_the_daemon_message() {
         let out = add_provider_screen(&AddProviderMode::Error {
             message: "invalid key".to_string(),
+            providers: Vec::new(),
+            cursor: 0,
             return_to_list: true,
         });
         assert!(out.contains("invalid key"), "{out}");
