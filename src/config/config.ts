@@ -113,6 +113,7 @@ export function validateConfig(value: unknown): LupinConfig {
   }
   const profiles = c['profiles'] as Record<string, unknown>;
   const emptyProfiles = Object.keys(profiles).length === 0;
+  if (emptyProfiles && c['activeProfile'] === undefined) c['activeProfile'] = '';
   if (typeof c['activeProfile'] !== 'string' || (!emptyProfiles && c['activeProfile'] === '')) {
     throw new Error('config: "activeProfile" must be a non-empty string when profiles exist');
   }

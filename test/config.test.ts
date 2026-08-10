@@ -34,6 +34,10 @@ describe('validateConfig', () => {
     expect(() => validateConfig({ ...VALID, activeProfile: 'ghost' })).toThrow(/ghost/);
   });
 
+  it('normalizes an absent activeProfile when profiles is empty', () => {
+    expect(validateConfig({ port: 3456, localToken: 'tok', profiles: {} }).activeProfile).toBe('');
+  });
+
   it('accepts an empty profile map with an empty activeProfile', () => {
     expect(validateConfig({ ...VALID, activeProfile: '', profiles: {} }).profiles).toEqual({});
   });
