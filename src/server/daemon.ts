@@ -23,6 +23,7 @@ export interface BootstrapDaemonDeps {
 export interface DaemonConfigLifecycle {
   current: () => LupinConfig;
   conflict: () => string | undefined;
+  awaitingPersistedConfig: () => boolean;
   adopt: (config: LupinConfig) => void;
 }
 
@@ -32,17 +33,21 @@ export function createDaemonConfigLifecycle(initial: {
 }): DaemonConfigLifecycle {
   let current = initial.config;
   let conflict: string | undefined;
+  let awaitingPersistedConfig = initial.bootstrap;
   const bound = initial.bootstrap ? { port: current.port, localToken: current.localToken } : undefined;
   return {
     current: () => current,
     conflict: () => conflict,
+    awaitingPersistedConfig: () => awaitingPersistedConfig,
     adopt: (config) => {
       if (conflict !== undefined) throw new Error(conflict);
       if (bound !== undefined && (config.port !== bound.port || config.localToken !== bound.localToken)) {
+        awaitingPersistedConfig = false;
         conflict = `persisted config identity conflicts with bootstrap listener on port ${String(bound.port)}`;
         throw new Error(conflict);
       }
       current = config;
+      awaitingPersistedConfig = false;
     },
   };
 }
@@ -51,10 +56,20 @@ export async function fetchWithDaemonConfigLifecycle(
   request: Request,
   lifecycle: DaemonConfigLifecycle,
   fetchApp: (request: Request) => Response | Promise<Response>,
+  reconcile?: () => void,
 ): Promise<Response> {
-  const conflict = lifecycle.conflict();
-  if (conflict !== undefined) {
-    return new Response(JSON.stringify({ ok: false, error: conflict }), {
+  const path = new URL(request.url).pathname;
+  let reconciliationError: string | undefined;
+  if (path === '/v1/lupin/providers' && lifecycle.awaitingPersistedConfig() && reconcile !== undefined) {
+    try {
+      reconcile();
+    } catch (e) {
+      reconciliationError = e instanceof Error ? e.message : String(e);
+    }
+  }
+  const failure = lifecycle.conflict() ?? reconciliationError;
+  if (failure !== undefined && path !== '/health') {
+    return new Response(JSON.stringify({ ok: false, error: failure }), {
       status: 409,
       headers: { 'content-type': 'application/json' },
     });

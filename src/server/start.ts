@@ -22,18 +22,22 @@ let app = createApp(config, { health, control });
 
 // Hot reload (SPEC-CLI §1 `lupin use`): a polling watch, reliable across
 // platforms and atomic tmp+rename replacements. A broken config never wins.
+function loadAndApplyConfig(): void {
+  const next = loadConfig(configPath);
+  const prev = config.activeProfile;
+  lifecycle.adopt(next);
+  config = lifecycle.current();
+  app = createApp(next, { health, control });
+  console.log(
+    next.activeProfile === prev
+      ? '[lupin] config reloaded'
+      : `[lupin] profile switched: ${prev} -> ${next.activeProfile}`,
+  );
+}
+
 function reloadConfig(): void {
   try {
-    const next = loadConfig(configPath);
-    const prev = config.activeProfile;
-    lifecycle.adopt(next);
-    config = lifecycle.current();
-    app = createApp(next, { health, control });
-    console.log(
-      next.activeProfile === prev
-        ? '[lupin] config reloaded'
-        : `[lupin] profile switched: ${prev} -> ${next.activeProfile}`,
-    );
+    loadAndApplyConfig();
   } catch (e) {
     console.error(`[lupin] config reload failed, keeping previous: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -57,7 +61,10 @@ if (initial.bootstrap) {
 
 serve(
   {
-    fetch: (req) => fetchWithDaemonConfigLifecycle(req, lifecycle, (request) => app.fetch(request)),
+    fetch: (req) =>
+      fetchWithDaemonConfigLifecycle(req, lifecycle, (request) => app.fetch(request), () => {
+        if (existsSync(configPath)) loadAndApplyConfig();
+      }),
     port: config.port,
     hostname: '127.0.0.1',
   },

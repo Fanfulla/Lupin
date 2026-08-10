@@ -21,6 +21,7 @@ import {
   fetchWithDaemonConfigLifecycle,
   initialDaemonConfig,
   pidfilePath,
+  serverAlive,
   serverHasIdentity,
   watchdogPidfilePath,
 } from '../src/server/daemon.js';
@@ -318,6 +319,7 @@ describe('bootstrap daemon entry contract', () => {
     const bound = bootstrapConfig('bound-token');
     const lifecycle = createDaemonConfigLifecycle({ config: bound, bootstrap: true });
     const app = new Hono();
+    app.get('/health', (c) => c.json({ ok: true }));
     app.get('/v1/lupin/providers', (c) =>
       c.req.header('authorization') === 'Bearer bound-token'
         ? c.json({ ok: true, providers: [] })
@@ -338,6 +340,7 @@ describe('bootstrap daemon entry contract', () => {
       );
       expect(lifecycle.current()).toEqual(bound);
       expect(lifecycle.conflict()).toMatch(/persisted config identity conflicts/);
+      expect(await serverAlive(port)).toBe(true);
       expect(await serverHasIdentity({ port, localToken: 'bound-token' })).toBe(false);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -360,5 +363,35 @@ describe('bootstrap daemon entry contract', () => {
 
     expect(lifecycle.current()).toBe(persisted);
     expect(lifecycle.conflict()).toBeUndefined();
+  });
+
+  it('reconciles a persisted identity before returning authenticated readiness', async () => {
+    const bound = bootstrapConfig('bound-token');
+    const lifecycle = createDaemonConfigLifecycle({ config: bound, bootstrap: true });
+    const app = new Hono();
+    app.get('/health', (c) => c.json({ ok: true }));
+    app.get('/v1/lupin/providers', (c) =>
+      c.req.header('authorization') === 'Bearer bound-token'
+        ? c.json({ ok: true, providers: [] })
+        : c.json({ ok: false }, 401),
+    );
+    const reconcile = vi.fn(() => lifecycle.adopt(bootstrapConfig('persisted-token')));
+    const server: ServerType = serve({
+      fetch: (request) => fetchWithDaemonConfigLifecycle(request, lifecycle, app.fetch, reconcile),
+      port: 0,
+      hostname: '127.0.0.1',
+    });
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    try {
+      expect(await serverHasIdentity({ port, localToken: 'bound-token' })).toBe(false);
+      expect(reconcile).toHaveBeenCalledOnce();
+      expect(lifecycle.current()).toEqual(bound);
+      expect(lifecycle.conflict()).toMatch(/persisted config identity conflicts/);
+      expect(await serverAlive(port)).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
