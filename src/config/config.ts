@@ -102,9 +102,6 @@ const SLOT_NAMES: SlotName[] = ['opus', 'sonnet', 'haiku'];
 export function validateConfig(value: unknown): LupinConfig {
   if (value === null || typeof value !== 'object') throw new Error('config: expected a JSON object');
   const c = value as Record<string, unknown>;
-  if (typeof c['activeProfile'] !== 'string' || c['activeProfile'] === '') {
-    throw new Error('config: "activeProfile" must be a non-empty string');
-  }
   if (typeof c['port'] !== 'number' || !Number.isInteger(c['port'])) {
     throw new Error('config: "port" must be an integer');
   }
@@ -115,6 +112,13 @@ export function validateConfig(value: unknown): LupinConfig {
     throw new Error('config: "profiles" must be an object');
   }
   const profiles = c['profiles'] as Record<string, unknown>;
+  const emptyProfiles = Object.keys(profiles).length === 0;
+  if (typeof c['activeProfile'] !== 'string' || (!emptyProfiles && c['activeProfile'] === '')) {
+    throw new Error('config: "activeProfile" must be a non-empty string when profiles exist');
+  }
+  if (emptyProfiles && c['activeProfile'] !== '') {
+    throw new Error(`config: activeProfile "${c['activeProfile']}" is not defined in profiles`);
+  }
   for (const [name, p] of Object.entries(profiles)) {
     validateProfile(name, p);
     const failover = (p as Record<string, unknown>)['failover'];
@@ -130,7 +134,7 @@ export function validateConfig(value: unknown): LupinConfig {
     const windows = rec['contextWindows'] as Record<string, unknown> | undefined;
     validateRoutes(name, rec['routes'], profiles, windows !== undefined && Object.keys(windows).length > 0);
   }
-  if (!(c['activeProfile'] in profiles)) {
+  if (!emptyProfiles && !(c['activeProfile'] in profiles)) {
     throw new Error(`config: activeProfile "${c['activeProfile']}" is not defined in profiles`);
   }
   validateAgents(c['agents'], profiles);

@@ -34,6 +34,18 @@ describe('validateConfig', () => {
     expect(() => validateConfig({ ...VALID, activeProfile: 'ghost' })).toThrow(/ghost/);
   });
 
+  it('accepts an empty profile map with an empty activeProfile', () => {
+    expect(validateConfig({ ...VALID, activeProfile: '', profiles: {} }).profiles).toEqual({});
+  });
+
+  it('rejects a non-empty activeProfile when profiles is empty', () => {
+    expect(() => validateConfig({ ...VALID, activeProfile: 'ghost', profiles: {} })).toThrow(/ghost/);
+  });
+
+  it('still rejects an empty activeProfile when profiles exist', () => {
+    expect(() => validateConfig({ ...VALID, activeProfile: '' })).toThrow(/activeProfile/);
+  });
+
   it('rejects a profile without apiKeyRef (keys never live in the config)', () => {
     const bad = structuredClone(VALID) as Record<string, unknown>;
     ((bad['profiles'] as Record<string, Record<string, unknown>>)['main'] as Record<string, unknown>)['auth'] = {
