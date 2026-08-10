@@ -5,25 +5,31 @@
 
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
+import { spawn, type ChildProcess } from 'node:child_process';
 import type { ServerType } from '@hono/node-server';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LupinConfig } from '../src/config/config.js';
 import { networkError } from '../src/core/errors.js';
 import {
   bootstrapDaemonEnv,
   createDaemonConfigLifecycle,
+  daemonWorkingDirectory,
   ensureBootstrapDaemonWith,
+  ensureDaemonWith,
   ensureWatchdog,
   entrypointArgs,
   fetchWithDaemonConfigLifecycle,
   initialDaemonConfig,
+  lifecycleLockPath,
   observeBootstrapConfigBeforeReload,
   pidfilePath,
   serverAlive,
   serverHasIdentity,
+  quiesceDaemonForUpdate,
   watchdogPidfilePath,
 } from '../src/server/daemon.js';
 import { DAEMON_DOWN_MESSAGE, holdPortDown } from '../src/server/watchdog.js';
@@ -87,11 +93,11 @@ describe('ensureWatchdog (respawn gap, §6.4)', () => {
     });
     expect(out).toBe('spawned');
     expect(spawnedPort).toBe(4114);
-    expect(readFileSync(watchdogPidfilePath(), 'utf8').trim()).toBe('12345');
+    expect(JSON.parse(readFileSync(watchdogPidfilePath(), 'utf8'))).toMatchObject({ pid: 12345 });
   });
 
   it('does not spawn a second watchdog while the recorded one is alive', () => {
-    writeFileSync(watchdogPidfilePath(), String(process.pid)); // our own pid: certainly alive
+    writeFileSync(watchdogPidfilePath(), JSON.stringify({ pid: process.pid, ownerToken: 'existing-owner' }));
     let called = false;
     const out = ensureWatchdog(4114, () => {
       called = true;
@@ -102,10 +108,10 @@ describe('ensureWatchdog (respawn gap, §6.4)', () => {
   });
 
   it('replaces a watchdog whose recorded pid is dead', () => {
-    writeFileSync(watchdogPidfilePath(), '999999'); // cannot exist
+    writeFileSync(watchdogPidfilePath(), JSON.stringify({ pid: 999999, ownerToken: 'dead-owner' }));
     const out = ensureWatchdog(4114, () => 22222);
     expect(out).toBe('spawned');
-    expect(readFileSync(watchdogPidfilePath(), 'utf8').trim()).toBe('22222');
+    expect(JSON.parse(readFileSync(watchdogPidfilePath(), 'utf8'))).toMatchObject({ pid: 22222 });
   });
 });
 
@@ -214,9 +220,156 @@ describe('entrypointArgs (dev vs dist spawn)', () => {
     expect(args[0]).toMatch(/watchdog\.js$/);
     expect(args[1]).toBe('4100');
   });
+
+  it('installed background processes run from the state directory, not the npm package', () => {
+    expect(daemonWorkingDirectory('file:///C:/pkg/dist/server/daemon.js', 'C:\\state')).toBe('C:\\state');
+    expect(daemonWorkingDirectory('file:///C:/repo/src/server/daemon.ts', 'C:\\state')).toMatch(/repo[\\/]*$/);
+  });
+});
+
+describe('update lifecycle quiescence', () => {
+  let restoreDir: string | undefined;
+  const children: ChildProcess[] = [];
+
+  beforeEach(() => {
+    restoreDir = process.env.LUPIN_DIR;
+    process.env.LUPIN_DIR = dir;
+    mkdirSync(dir, { recursive: true });
+  });
+
+  afterEach(() => {
+    for (const child of children) {
+      if (child.exitCode === null && child.pid !== undefined) {
+        try {
+          process.kill(child.pid);
+        } catch {
+          // already gone
+        }
+      }
+    }
+    children.length = 0;
+    if (restoreDir === undefined) delete process.env.LUPIN_DIR;
+    else process.env.LUPIN_DIR = restoreDir;
+  });
+
+  async function waitUntil(predicate: () => boolean): Promise<void> {
+    const deadline = Date.now() + 5000;
+    while (!predicate()) {
+      if (Date.now() >= deadline) throw new Error('test process did not reach the expected state');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  it('stops the watchdog before the daemon so no fallback takes the port during npm install', async () => {
+    const daemonEntry = fileURLToPath(new URL('../src/server/start.ts', import.meta.url));
+    const watchdogEntry = fileURLToPath(new URL('../src/server/watchdog.ts', import.meta.url));
+    const daemon = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', daemonEntry], { stdio: 'ignore' });
+    children.push(daemon);
+    if (daemon.pid === undefined) throw new Error('daemon fixture did not start');
+
+    const ready = join(dir, 'watchdog-ready');
+    const fallback = join(dir, 'fallback-started');
+    const watcherScript = [
+      "const fs = require('node:fs')",
+      'const daemonPid = Number(process.argv[1])',
+      'const ready = process.argv[2]',
+      'const fallback = process.argv[3]',
+      "fs.writeFileSync(ready, 'ready')",
+      "setInterval(() => { try { process.kill(daemonPid, 0) } catch { fs.writeFileSync(fallback, 'started') } }, 5)",
+    ].join(';');
+    const watchdog = spawn(
+      process.execPath,
+      ['-e', watcherScript, String(daemon.pid), ready, fallback, watchdogEntry],
+      { stdio: 'ignore' },
+    );
+    children.push(watchdog);
+    if (watchdog.pid === undefined) throw new Error('watchdog fixture did not start');
+
+    await waitUntil(() => existsSync(ready));
+    writeFileSync(pidfilePath(), JSON.stringify({ pid: daemon.pid, ownerToken: 'daemon-owner' }));
+    writeFileSync(watchdogPidfilePath(), JSON.stringify({ pid: watchdog.pid, ownerToken: 'watchdog-owner' }));
+
+    const quiescence = await quiesceDaemonForUpdate((pid) =>
+      pid === watchdog.pid
+        ? `node ${watchdogEntry} --lupin-owner=watchdog-owner`
+        : `node ${daemonEntry} --lupin-owner=daemon-owner`,
+    );
+    expect(quiescence.daemonWasRunning).toBe(true);
+    expect(existsSync(lifecycleLockPath())).toBe(true);
+    await waitUntil(() => daemon.exitCode !== null && watchdog.exitCode !== null);
+    expect(existsSync(fallback)).toBe(false);
+    expect(existsSync(pidfilePath())).toBe(false);
+    expect(existsSync(watchdogPidfilePath())).toBe(false);
+    quiescence.release();
+    expect(existsSync(lifecycleLockPath())).toBe(false);
+  });
+
+  it('refuses a reused pid carrying the same entrypoint but a different lifecycle token', async () => {
+    const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    children.push(unrelated);
+    if (unrelated.pid === undefined) throw new Error('unrelated fixture did not start');
+    writeFileSync(pidfilePath(), JSON.stringify({ pid: unrelated.pid, ownerToken: 'recorded-owner' }));
+    const daemonEntry = fileURLToPath(new URL('../src/server/start.ts', import.meta.url));
+
+    await expect(quiesceDaemonForUpdate(() => `node ${daemonEntry} --lupin-owner=different-owner`)).rejects.toThrow(
+      /does not run the expected Lupin daemon entrypoint/,
+    );
+    expect(() => process.kill(unrelated.pid as number, 0)).not.toThrow();
+  });
+
+  it('makes a concurrent daemon start wait for the lifecycle lock', async () => {
+    const owner = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], { stdio: 'ignore' });
+    children.push(owner);
+    if (owner.pid === undefined) throw new Error('lock owner fixture did not start');
+    writeFileSync(lifecycleLockPath(), String(owner.pid));
+    setTimeout(() => rmSync(lifecycleLockPath(), { force: true }), 250);
+
+    const startedAt = Date.now();
+    expect(await ensureDaemonWith(4567, undefined, async () => true)).toBe('already-running');
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(150);
+  });
+
+  it('never deletes a stale lifecycle lock behind another waiter', async () => {
+    writeFileSync(lifecycleLockPath(), '999999');
+    await expect(ensureDaemonWith(4567, undefined, async () => true)).rejects.toThrow(/stale lifecycle lock/);
+    expect(readFileSync(lifecycleLockPath(), 'utf8').trim()).toBe('999999');
+  });
+
+  it('holds the bootstrap already-running fast path behind the lifecycle lock', async () => {
+    const owner = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], { stdio: 'ignore' });
+    children.push(owner);
+    if (owner.pid === undefined) throw new Error('bootstrap lock owner fixture did not start');
+    writeFileSync(lifecycleLockPath(), String(owner.pid));
+    setTimeout(() => rmSync(lifecycleLockPath(), { force: true }), 250);
+    const startedAt = Date.now();
+
+    expect(
+      await ensureBootstrapDaemonWith(
+        { port: 4567, localToken: 'token' },
+        {
+          serverAlive: async () => true,
+          identityAlive: async () => true,
+          startDaemon: async () => 'started',
+          ensureWatchdog: () => undefined,
+        },
+      ),
+    ).toBe('already-running');
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(150);
+  });
 });
 
 describe('bootstrap daemon entry contract', () => {
+  let restoreDir: string | undefined;
+  beforeEach(() => {
+    restoreDir = process.env.LUPIN_DIR;
+    process.env.LUPIN_DIR = dir;
+    mkdirSync(dir, { recursive: true });
+  });
+  afterEach(() => {
+    if (restoreDir === undefined) delete process.env.LUPIN_DIR;
+    else process.env.LUPIN_DIR = restoreDir;
+  });
+
   const bootstrapConfig = (localToken: string): LupinConfig => ({
     activeProfile: '',
     port: 4567,

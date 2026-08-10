@@ -29,7 +29,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Node >= 20](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)
 ![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178c6)
-![tests](https://img.shields.io/badge/tests-794%20node%20%2B%2077%20rust-success)
+![tests](https://img.shields.io/badge/tests-803%20node%20%2B%2077%20rust-success)
 
 </div>
 
@@ -150,7 +150,15 @@ truth.
 | API key rejected | retry the masked field or rerun `lupin init`; failed verification saves nothing |
 | OAuth browser did not open | copy the URL shown in the terminal; the CLI/TUI keeps polling |
 | port 3456 already in use | run `lupin status`; do not kill an unrelated process until you identify it |
+| `lupin update` from 0.2.4 fails with Windows `EBUSY` | close Lupin and Claude Code, reboot Windows, then install 0.2.5 or newer before reopening Lupin; use the recovery command below if npm was damaged too |
 | Windows build cannot find `link.exe` or `kernel32.lib` | install MSVC Build Tools and the Windows SDK, then use `tui/build-msvc.bat --release` |
+
+PowerShell recovery after the 0.2.4 `EBUSY` failure:
+
+```powershell
+$nodeDir = Split-Path (Get-Command node).Source
+& "$nodeDir\node.exe" "$nodeDir\node_modules\npm\bin\npm-cli.js" install --global lupin-code@latest
+```
 
 Config, logs and credentials live under `~/.lupin` by default. `LUPIN_DIR`
 moves that whole directory. API keys and OAuth tokens live in the OS keychain
@@ -341,7 +349,7 @@ every fact and shrinks the art. It needs a real terminal: it takes over the
 screen, so it will not do anything useful inside another tool's output pane.
 
 ```
-⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.2.4   the gentleman router
+⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.2.5   the gentleman router
 ⠈⢿⣿⣿⣿⣿⣿⣷⣖⠀⠀⠀⠀⠀⠀⠀  daemon up   127.0.0.1:3456
 ⠀⠴⢿⣿⣿⣿⣿⣿⣿⣀⠀⠀⠀⠀⠀⠀  active: kimi-sub  ->  k3
 ⠀⠀⠈⠛⢿⠿⣿⣿⣿⣿⣿⣶⣶⣶⣤⣄

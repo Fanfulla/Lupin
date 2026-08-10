@@ -4,11 +4,13 @@
 // exists. The registry call happens exclusively on this command: no startup
 // check, no phone-home (§4.3).
 
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { copyFileSync, existsSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
 import { CLIENT_VERSION } from '../providers/identity.js';
+import { loadConfig } from '../config/config.js';
+import { ensureDaemon, quiesceDaemonForUpdate } from '../server/daemon.js';
 
 export const REGISTRY_LATEST_URL = 'https://registry.npmjs.org/lupin-code/latest';
 
@@ -65,7 +67,7 @@ export function planUpdate(state: UpdateState): UpdatePlan {
   if (cmp === undefined) return { kind: 'incomparable' };
   const hasSidecar = state.sidecarPath !== undefined;
   if (cmp >= 0) {
-    const stale = hasSidecar && state.sidecarVersion !== undefined && state.sidecarVersion !== state.latest;
+    const stale = hasSidecar && state.sidecarVersion !== undefined && state.sidecarVersion !== state.current;
     return { kind: 'upToDate', rebuildSidecar: stale && state.cargoAvailable, sidecarHint: stale && !state.cargoAvailable };
   }
   return {
@@ -117,6 +119,55 @@ function readSidecarVersion(sidecarPath: string): string | undefined {
   return m === null ? undefined : m[1];
 }
 
+export function npmInvocation(
+  platform: NodeJS.Platform = process.platform,
+  execPath: string = process.execPath,
+  pathExists: (path: string) => boolean = existsSync,
+): { command: string; argsPrefix: string[]; shell: boolean } {
+  if (platform === 'win32') {
+    const bundledCli = win32.join(win32.dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    if (pathExists(bundledCli)) return { command: execPath, argsPrefix: [bundledCli], shell: false };
+  }
+  return { command: 'npm', argsPrefix: [], shell: platform === 'win32' };
+}
+
+function runNpm(args: string[], options: { stdio: 'inherit' }): SpawnSyncReturns<Buffer>;
+function runNpm(args: string[], options: { encoding: 'utf8' }): SpawnSyncReturns<string>;
+function runNpm(
+  args: string[],
+  options: { stdio: 'inherit' } | { encoding: 'utf8' },
+): SpawnSyncReturns<string> | SpawnSyncReturns<Buffer> {
+  const npm = npmInvocation();
+  return spawnSync(npm.command, [...npm.argsPrefix, ...args], {
+    ...options,
+    shell: npm.shell,
+  }) as SpawnSyncReturns<string> | SpawnSyncReturns<Buffer>;
+}
+
+export interface PackageInstallLifecycle {
+  quiesce: () => Promise<{ daemonWasRunning: boolean; release: () => void }>;
+  install: () => number | null;
+  restart: () => Promise<void>;
+}
+
+export async function installPackageWithLifecycle(
+  lifecycle: PackageInstallLifecycle,
+): Promise<{ installStatus: number | null; restartError?: unknown }> {
+  const quiescence = await lifecycle.quiesce();
+  try {
+    const installStatus = lifecycle.install();
+    if (!quiescence.daemonWasRunning) return { installStatus };
+    try {
+      await lifecycle.restart();
+      return { installStatus };
+    } catch (restartError) {
+      return { installStatus, restartError };
+    }
+  } finally {
+    quiescence.release();
+  }
+}
+
 export async function updateCommand(fetchImpl: typeof fetch = fetch): Promise<number> {
   let latest: string;
   try {
@@ -147,7 +198,7 @@ export async function updateCommand(fetchImpl: typeof fetch = fetch): Promise<nu
     }
     if (!plan.rebuildSidecar) return 0;
     console.log(`the lupin-tui sidecar is behind (${String(sidecarVersion)})`);
-    return rebuildSidecar(sidecarPath as string, latest);
+    return rebuildSidecar(sidecarPath as string, CLIENT_VERSION);
   }
   if (plan.kind === 'incomparable') {
     console.error(`cannot compare versions: running ${CLIENT_VERSION}, registry says ${latest}`);
@@ -156,16 +207,47 @@ export async function updateCommand(fetchImpl: typeof fetch = fetch): Promise<nu
   }
 
   console.log(`updating lupin-code ${CLIENT_VERSION} -> ${latest} (global npm install)`);
-  // Fixed args only on this shell: nothing user-controlled travels through it
-  // (the ADR-29 rule; npm is a .cmd shim on Windows, so the shell is required).
-  const install = spawnSync('npm', ['i', '-g', 'lupin-code@latest'], {
-    stdio: 'inherit',
-    shell: process.platform === 'win32',
-  });
-  if (install.status !== 0) {
-    console.error(`npm exited with ${String(install.status ?? 'a signal')}: the update did not happen`);
+  let restartPort: number | undefined;
+  try {
+    restartPort = loadConfig().port;
+  } catch {
+    // A bootstrap daemon has no persisted identity to restore after an update.
+  }
+  let restarted = false;
+  let replacement: Awaited<ReturnType<typeof installPackageWithLifecycle>>;
+  try {
+    replacement = await installPackageWithLifecycle({
+      quiesce: quiesceDaemonForUpdate,
+      install: () => {
+        // Fixed args only: nothing user-controlled travels through this boundary
+        // (ADR-29). Windows prefers Node's bundled npm CLI; the .cmd shell is
+        // only the fallback when that file cannot be found.
+        const install = runNpm(['i', '-g', 'lupin-code@latest'], { stdio: 'inherit' });
+        return install.status;
+      },
+      restart: async () => {
+        if (restartPort === undefined) throw new Error('the previous daemon had no persisted config to restart');
+        await ensureDaemon(restartPort);
+        restarted = true;
+      },
+    });
+  } catch (e) {
+    console.error(`could not release the running Lupin processes before npm: ${e instanceof Error ? e.message : String(e)}`);
+    console.error('  the update did not start; close active Lupin sessions and try again');
     return 1;
   }
+  if (replacement.restartError !== undefined) {
+    console.error(
+      `the package replacement finished, but the previous daemon could not be restored: ${replacement.restartError instanceof Error ? replacement.restartError.message : String(replacement.restartError)}`,
+    );
+  } else if (restarted) {
+    console.log('✓ daemon restarted');
+  }
+  if (replacement.installStatus !== 0) {
+    console.error(`npm exited with ${String(replacement.installStatus ?? 'a signal')}: the update did not happen`);
+    return 1;
+  }
+  if (replacement.restartError !== undefined) return 1;
   console.log(`✓ lupin-code ${latest} installed`);
 
   if (plan.sidecarHint) {
@@ -184,7 +266,7 @@ export async function updateCommand(fetchImpl: typeof fetch = fetch): Promise<nu
  * across updates.
  */
 function rebuildSidecar(sidecarPath: string, latest: string): number {
-  const root = spawnSync('npm', ['root', '-g'], { encoding: 'utf8', shell: process.platform === 'win32' });
+  const root = runNpm(['root', '-g'], { encoding: 'utf8' });
   const rootDir = root.status === 0 ? root.stdout.trim() : '';
   const manifest = join(rootDir, 'lupin-code', 'tui', 'Cargo.toml');
   if (rootDir === '' || !existsSync(manifest)) {

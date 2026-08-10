@@ -10,9 +10,9 @@
 import { serve } from '@hono/node-server';
 import type { ServerType } from '@hono/node-server';
 import { Hono } from 'hono';
-import { appendFileSync, existsSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, rmSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { logfilePath, pidfilePath, watchdogPidfilePath } from './daemon.js';
+import { logfilePath, pidfilePath, readPidfile, watchdogPidfilePath } from './daemon.js';
 import { networkError } from '../core/errors.js';
 
 export const DAEMON_DOWN_MESSAGE =
@@ -25,12 +25,6 @@ function pidRunning(pid: number): boolean {
   } catch {
     return false;
   }
-}
-
-function readDaemonPid(): number | undefined {
-  if (!existsSync(pidfilePath())) return undefined;
-  const pid = Number(readFileSync(pidfilePath(), 'utf8').trim());
-  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
 }
 
 async function daemonAlive(port: number): Promise<boolean> {
@@ -52,7 +46,7 @@ function logLine(obj: Record<string, unknown>): void {
 
 /** True while the recorded daemon pid is alive and answering. */
 async function daemonUp(port: number): Promise<boolean> {
-  const pid = readDaemonPid();
+  const pid = readPidfile();
   if (pid === undefined || !pidRunning(pid)) return false;
   return await daemonAlive(port);
 }
@@ -89,7 +83,7 @@ export async function holdPortDown(
       // Recover only when the REAL daemon answers: check the pid too, so we
       // do not mistake our own fallback for the daemon coming back.
       if (await daemonUp(port)) return 'recovered';
-      const pid = readDaemonPid();
+      const pid = readPidfile();
       if (pid !== undefined && pidRunning(pid)) {
         logLine({ event: 'fallback-yield', port, pid });
         return 'yielded';
@@ -130,7 +124,7 @@ async function main(): Promise<void> {
 
   // Clear a stale pidfile so the next `lupin run` does not trust a dead pid,
   // and our own record so the next run knows no watchdog is resident.
-  const pid = readDaemonPid();
+  const pid = readPidfile();
   if (pid !== undefined && !pidRunning(pid)) rmSync(pidfilePath(), { force: true });
   rmSync(watchdogPidfilePath(), { force: true });
   logLine({ event: 'watchdog-exit', port });

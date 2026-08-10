@@ -10,6 +10,8 @@ import {
   compareVersions,
   fetchLatestVersion,
   findOnPath,
+  installPackageWithLifecycle,
+  npmInvocation,
   parseVersion,
   planUpdate,
   REGISTRY_LATEST_URL,
@@ -43,6 +45,15 @@ describe('planUpdate (ADR-49)', () => {
     const idle = { kind: 'upToDate', rebuildSidecar: false, sidecarHint: false };
     expect(planUpdate({ current: '0.2.1', latest: '0.2.1', cargoAvailable: true })).toEqual(idle);
     expect(planUpdate({ current: '0.3.0', latest: '0.2.1', cargoAvailable: true })).toEqual(idle);
+    expect(
+      planUpdate({
+        current: '0.3.0',
+        latest: '0.2.1',
+        sidecarPath: '/bin/lupin-tui',
+        sidecarVersion: '0.3.0',
+        cargoAvailable: true,
+      }),
+    ).toEqual(idle);
   });
 
   it('a stale sidecar is rebuilt even when the package is already latest', () => {
@@ -123,5 +134,62 @@ describe('findOnPath', () => {
 
   it('an empty PATH finds nothing rather than throwing', () => {
     expect(findOnPath('anything', {}, 'linux')).toBeUndefined();
+  });
+});
+
+describe('global package replacement on Windows', () => {
+  it('uses the npm bundled with Node instead of a shadowed global npm shim', () => {
+    expect(
+      npmInvocation('win32', 'C:\\Program Files\\nodejs\\node.exe', (path) =>
+        path.endsWith('node_modules\\npm\\bin\\npm-cli.js'),
+      ),
+    ).toEqual({
+      command: 'C:\\Program Files\\nodejs\\node.exe',
+      argsPrefix: ['C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js'],
+      shell: false,
+    });
+  });
+
+  it('quiesces Lupin before npm and restores a previously running daemon afterwards', async () => {
+    const events: string[] = [];
+    const result = await installPackageWithLifecycle({
+      quiesce: async () => {
+        events.push('quiesce');
+        return {
+          daemonWasRunning: true,
+          release: () => events.push('release'),
+        };
+      },
+      install: () => {
+        events.push('npm-install');
+        return 0;
+      },
+      restart: async () => {
+        events.push('restart');
+      },
+    });
+
+    expect(events).toEqual(['quiesce', 'npm-install', 'restart', 'release']);
+    expect(result).toEqual({ installStatus: 0 });
+  });
+
+  it('restores a previously running daemon even when npm fails', async () => {
+    const events: string[] = [];
+    const result = await installPackageWithLifecycle({
+      quiesce: async () => ({
+        daemonWasRunning: true,
+        release: () => events.push('release'),
+      }),
+      install: () => {
+        events.push('npm-failed');
+        return 1;
+      },
+      restart: async () => {
+        events.push('restart');
+      },
+    });
+
+    expect(events).toEqual(['npm-failed', 'restart', 'release']);
+    expect(result).toEqual({ installStatus: 1 });
   });
 });

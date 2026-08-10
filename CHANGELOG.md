@@ -7,6 +7,28 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
+## [0.2.5] - 2026-08-10
+
+### Fixed
+
+- **`lupin update` no longer fails with `EBUSY` while replacing a global
+  Windows install.** Before npm runs, Lupin now stops its recorded watchdog
+  and daemon in that order, waits for both to exit, and restores a daemon that
+  was running before the update. Installed background processes also use the
+  Lupin state directory as their working directory instead of anchoring the
+  package inside `node_modules`. Only PIDs carrying the exact Lupin entrypoint
+  and the random ownership token recorded when they were spawned are stopped.
+- **A locally newer package no longer makes a matching sidecar look stale.**
+  Sidecar freshness is compared with the installed package, not an older npm
+  registry tag, and any rebuild on the already-installed path targets that
+  installed version.
+
+Upgrading from 0.2.4 after `EBUSY` may require one Windows reboot because the
+old updater cannot run the fix before replacing itself. Close active Lupin and
+Claude Code sessions, reboot, and install 0.2.5 before starting Lupin again.
+The README includes a PowerShell command that also bypasses a damaged global
+npm shim.
+
 ## [0.2.4] - 2026-08-10
 
 ### Added

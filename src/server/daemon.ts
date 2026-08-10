@@ -2,8 +2,9 @@
 // ~/.lupin/, stale-pidfile recovery, health polling. CLI commands orchestrate
 // these helpers; the server itself lives in start.ts.
 
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -128,6 +129,15 @@ export function entrypointArgs(moduleUrl: string, relEntryTs: string): string[] 
   return isTs ? ['--import', 'tsx', entry] : [entry];
 }
 
+/**
+ * Source runs need the repository root so Node can resolve the tsx loader.
+ * Installed JavaScript needs no package-relative cwd, and using one keeps the
+ * global package directory locked on Windows during `npm i -g`.
+ */
+export function daemonWorkingDirectory(moduleUrl: string, stateDir: string = lupinDir()): string {
+  return moduleUrl.endsWith('.ts') ? fileURLToPath(new URL('../..', moduleUrl)) : stateDir;
+}
+
 export function pidfilePath(): string {
   return join(lupinDir(), 'lupin.pid');
 }
@@ -140,6 +150,10 @@ export function logfilePath(): string {
   return join(lupinDir(), 'lupin.log');
 }
 
+export function lifecycleLockPath(): string {
+  return join(lupinDir(), 'lifecycle.lock');
+}
+
 export async function serverAlive(port: number): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${String(port)}/health`, { signal: AbortSignal.timeout(1000) });
@@ -150,9 +164,35 @@ export async function serverAlive(port: number): Promise<boolean> {
 }
 
 export function readPidfile(): number | undefined {
-  if (!existsSync(pidfilePath())) return undefined;
-  const pid = Number(readFileSync(pidfilePath(), 'utf8').trim());
-  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  return readProcessRecord(pidfilePath())?.pid;
+}
+
+interface ProcessRecord {
+  pid: number;
+  ownerToken?: string;
+}
+
+function readProcessRecord(path: string): ProcessRecord | undefined {
+  if (!existsSync(path)) return undefined;
+  const raw = readFileSync(path, 'utf8').trim();
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed === 'number') {
+      return Number.isInteger(parsed) && parsed > 0 ? { pid: parsed } : undefined;
+    }
+    if (typeof parsed !== 'object' || parsed === null) return undefined;
+    const value = parsed as { pid?: unknown; ownerToken?: unknown };
+    if (!Number.isInteger(value.pid) || (value.pid as number) <= 0) return undefined;
+    return {
+      pid: value.pid as number,
+      ...(typeof value.ownerToken === 'string' && value.ownerToken !== ''
+        ? { ownerToken: value.ownerToken }
+        : {}),
+    };
+  } catch {
+    const pid = Number(raw);
+    return Number.isInteger(pid) && pid > 0 ? { pid } : undefined;
+  }
 }
 
 function pidRunning(pid: number): boolean {
@@ -195,23 +235,42 @@ export async function ensureBootstrapDaemonWith(
   identity: DaemonIdentity,
   deps: BootstrapDaemonDeps,
 ): Promise<DaemonResult> {
-  if (await deps.serverAlive(identity.port)) {
-    if (!(await deps.identityAlive(identity))) throw daemonIdentityConflict(identity.port);
-    deps.ensureWatchdog(identity.port);
-    return 'already-running';
+  const lease = await acquireLifecycleLock();
+  try {
+    if (await deps.serverAlive(identity.port)) {
+      if (!(await deps.identityAlive(identity))) throw daemonIdentityConflict(identity.port);
+      deps.ensureWatchdog(identity.port);
+      return 'already-running';
+    }
+    return await deps.startDaemon(
+      identity.port,
+      bootstrapDaemonEnv(identity),
+      async () => await deps.identityAlive(identity),
+    );
+  } finally {
+    lease.release();
   }
-  return await deps.startDaemon(
-    identity.port,
-    bootstrapDaemonEnv(identity),
-    async () => await deps.identityAlive(identity),
-  );
 }
 
-async function ensureDaemonWith(
+export async function ensureDaemonWith(
   port: number,
   serverEnv?: Record<string, string>,
   readiness: ReadinessProbe = serverAlive,
   occupied: ReadinessProbe = readiness,
+): Promise<DaemonResult> {
+  const lease = await acquireLifecycleLock();
+  try {
+    return await ensureDaemonUnlocked(port, serverEnv, readiness, occupied);
+  } finally {
+    lease.release();
+  }
+}
+
+async function ensureDaemonUnlocked(
+  port: number,
+  serverEnv: Record<string, string> | undefined,
+  readiness: ReadinessProbe,
+  occupied: ReadinessProbe,
 ): Promise<DaemonResult> {
   if (await readiness(port)) {
     // §6.4 respawn gap (audit 2026-07-22): a watchdog that died while the
@@ -226,16 +285,16 @@ async function ensureDaemonWith(
   if (stale !== undefined && !pidRunning(stale)) rmSync(pidfilePath(), { force: true }); // SPEC-CLI §6.4
 
   mkdirSync(lupinDir(), { recursive: true, mode: 0o700 });
-  const pkgRoot = fileURLToPath(new URL('../..', import.meta.url)); // dev: resolves tsx from our node_modules
   const out = openSync(logfilePath(), 'a');
-  const child = spawn(process.execPath, entrypointArgs(import.meta.url, './start.ts'), {
-    cwd: pkgRoot,
+  const ownerToken = randomUUID();
+  const child = spawn(process.execPath, [...entrypointArgs(import.meta.url, './start.ts'), `--lupin-owner=${ownerToken}`], {
+    cwd: daemonWorkingDirectory(import.meta.url),
     detached: true,
     stdio: ['ignore', out, out],
     ...(serverEnv === undefined ? {} : { env: { ...process.env, ...serverEnv } }),
   });
   child.unref();
-  if (child.pid !== undefined) writeFileSync(pidfilePath(), String(child.pid));
+  if (child.pid !== undefined) writeFileSync(pidfilePath(), JSON.stringify({ pid: child.pid, ownerToken }));
 
   for (let i = 0; i < 40; i++) {
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -260,21 +319,158 @@ function daemonIdentityConflict(port: number): Error {
  */
 export function ensureWatchdog(
   port: number,
-  spawnFn: (port: number) => number | undefined = spawnWatchdog,
+  spawnFn: (port: number, ownerToken: string) => number | undefined = spawnWatchdog,
 ): 'already-running' | 'spawned' | 'disabled' {
   if (process.env.LUPIN_NO_WATCHDOG === '1') return 'disabled'; // tests + doctor ephemeral servers
-  const recorded = readWatchdogPid();
-  if (recorded !== undefined && pidRunning(recorded)) return 'already-running';
+  const recorded = readProcessRecord(watchdogPidfilePath());
+  if (recorded !== undefined && pidRunning(recorded.pid)) return 'already-running';
   mkdirSync(lupinDir(), { recursive: true, mode: 0o700 });
-  const pid = spawnFn(port);
-  if (pid !== undefined) writeFileSync(watchdogPidfilePath(), String(pid));
+  const ownerToken = randomUUID();
+  const pid = spawnFn(port, ownerToken);
+  if (pid !== undefined) writeFileSync(watchdogPidfilePath(), JSON.stringify({ pid, ownerToken }));
   return 'spawned';
 }
 
-function readWatchdogPid(): number | undefined {
-  if (!existsSync(watchdogPidfilePath())) return undefined;
-  const pid = Number(readFileSync(watchdogPidfilePath(), 'utf8').trim());
-  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+interface LifecycleLease {
+  release: () => void;
+}
+
+async function acquireLifecycleLock(timeoutMs = 30_000): Promise<LifecycleLease> {
+  mkdirSync(lupinDir(), { recursive: true, mode: 0o700 });
+  const path = lifecycleLockPath();
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const fd = openSync(path, 'wx', 0o600);
+      try {
+        writeFileSync(fd, String(process.pid));
+      } finally {
+        closeSync(fd);
+      }
+      return {
+        release: () => {
+          try {
+            if (readFileSync(path, 'utf8').trim() === String(process.pid)) rmSync(path, { force: true });
+          } catch {
+            // Already released or replaced. Never remove another owner's lock.
+          }
+        },
+      };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
+
+    let owner: number | undefined;
+    try {
+      const value = Number(readFileSync(path, 'utf8').trim());
+      if (Number.isInteger(value) && value > 0) owner = value;
+    } catch {
+      // A creator may still be filling the just-created file. Poll it.
+    }
+    if (owner === process.pid) return { release: () => undefined };
+    if (owner !== undefined && !pidRunning(owner)) {
+      throw new Error(
+        `stale lifecycle lock from PID ${String(owner)}; remove ${path} after confirming no Lupin update or start is running`,
+      );
+    }
+    if (Date.now() >= deadline) throw new Error('another Lupin lifecycle operation did not finish within 30 seconds');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+async function stopRecordedProcess(pid: number | undefined, label: string): Promise<void> {
+  if (pid === undefined || !pidRunning(pid)) return;
+  if (pid === process.pid) throw new Error(`refusing to stop the current process recorded as the ${label}`);
+  try {
+    process.kill(pid);
+  } catch (e) {
+    if (!pidRunning(pid)) return;
+    throw new Error(`could not stop the recorded ${label} process ${String(pid)}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const deadline = Date.now() + 5000;
+  while (pidRunning(pid)) {
+    if (Date.now() >= deadline) throw new Error(`recorded ${label} process ${String(pid)} did not exit within 5 seconds`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+function processCommandLine(pid: number): string | undefined {
+  if (process.platform === 'win32') {
+    const script = `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${String(pid)}"; if ($null -ne $p) { [Console]::Out.Write($p.CommandLine) }`;
+    const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    return result.status === 0 && result.stdout.trim() !== '' ? result.stdout.trim() : undefined;
+  }
+  const procPath = `/proc/${String(pid)}/cmdline`;
+  if (existsSync(procPath)) return readFileSync(procPath, 'utf8').replaceAll('\0', ' ');
+  const result = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+  return result.status === 0 && result.stdout.trim() !== '' ? result.stdout.trim() : undefined;
+}
+
+function processRunsEntrypoint(
+  commandLine: string | undefined,
+  expectedEntrypoint: string,
+  ownerToken: string,
+): boolean {
+  if (commandLine === undefined) return false;
+  const hasEntrypoint = process.platform === 'win32'
+    ? commandLine.toLowerCase().includes(expectedEntrypoint.toLowerCase())
+    : commandLine.includes(expectedEntrypoint);
+  return hasEntrypoint && commandLine.includes(`--lupin-owner=${ownerToken}`);
+}
+
+async function stopOwnedProcess(
+  record: ProcessRecord | undefined,
+  label: string,
+  expectedEntrypoint: string,
+  readCommandLine: (pid: number) => string | undefined,
+): Promise<void> {
+  if (record === undefined || !pidRunning(record.pid)) return;
+  if (record.ownerToken === undefined) {
+    throw new Error(
+      `recorded ${label} PID ${String(record.pid)} uses a legacy pidfile; reboot before retrying the update`,
+    );
+  }
+  if (!processRunsEntrypoint(readCommandLine(record.pid), expectedEntrypoint, record.ownerToken)) {
+    throw new Error(`recorded ${label} PID ${String(record.pid)} does not run the expected Lupin ${label} entrypoint`);
+  }
+  await stopRecordedProcess(record.pid, label);
+}
+
+/**
+ * Release every file and working-directory handle owned by Lupin before npm
+ * replaces the global package. The watchdog goes first so it cannot bind the
+ * daemon port while the package is being renamed.
+ */
+export async function quiesceDaemonForUpdate(
+  readCommandLine: (pid: number) => string | undefined = processCommandLine,
+): Promise<{ daemonWasRunning: boolean; release: () => void }> {
+  const lease = await acquireLifecycleLock();
+  const daemon = readProcessRecord(pidfilePath());
+  const watchdog = readProcessRecord(watchdogPidfilePath());
+  const daemonWasRunning = daemon !== undefined && pidRunning(daemon.pid);
+  try {
+    await stopOwnedProcess(
+      watchdog,
+      'watchdog',
+      entrypointArgs(import.meta.url, './watchdog.ts').at(-1) as string,
+      readCommandLine,
+    );
+    rmSync(watchdogPidfilePath(), { force: true });
+    await stopOwnedProcess(
+      daemon,
+      'daemon',
+      entrypointArgs(import.meta.url, './start.ts').at(-1) as string,
+      readCommandLine,
+    );
+    rmSync(pidfilePath(), { force: true });
+    return { daemonWasRunning, release: lease.release };
+  } catch (e) {
+    lease.release();
+    throw e;
+  }
 }
 
 export function stopDaemon(): 'stopped' | 'not-running' {
@@ -292,15 +488,18 @@ export function stopDaemon(): 'stopped' | 'not-running' {
  * a live daemon means an older watchdog is redundant, so we only spawn when
  * we just started the daemon ourselves. Returns the watchdog pid (tests).
  */
-export function spawnWatchdog(port: number): number | undefined {
+export function spawnWatchdog(port: number, ownerToken: string = randomUUID()): number | undefined {
   if (process.env.LUPIN_NO_WATCHDOG === '1') return undefined; // tests + doctor ephemeral servers
-  const pkgRoot = fileURLToPath(new URL('../..', import.meta.url));
   const out = openSync(logfilePath(), 'a');
-  const child = spawn(process.execPath, [...entrypointArgs(import.meta.url, './watchdog.ts'), String(port)], {
-    cwd: pkgRoot,
-    detached: true,
-    stdio: ['ignore', out, out],
-  });
+  const child = spawn(
+    process.execPath,
+    [...entrypointArgs(import.meta.url, './watchdog.ts'), String(port), `--lupin-owner=${ownerToken}`],
+    {
+      cwd: daemonWorkingDirectory(import.meta.url),
+      detached: true,
+      stdio: ['ignore', out, out],
+    },
+  );
   child.unref();
   return child.pid;
 }
