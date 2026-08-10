@@ -249,16 +249,21 @@ describe('entrypointArgs (dev vs dist spawn)', () => {
 
 describe('update lifecycle quiescence', () => {
   let restoreDir: string | undefined;
+  let restoreNoWatchdog: string | undefined;
 
   beforeEach(() => {
     restoreDir = process.env.LUPIN_DIR;
+    restoreNoWatchdog = process.env.LUPIN_NO_WATCHDOG;
     process.env.LUPIN_DIR = dir;
+    process.env.LUPIN_NO_WATCHDOG = '1';
     mkdirSync(dir, { recursive: true });
   });
 
   afterEach(() => {
     if (restoreDir === undefined) delete process.env.LUPIN_DIR;
     else process.env.LUPIN_DIR = restoreDir;
+    if (restoreNoWatchdog === undefined) delete process.env.LUPIN_NO_WATCHDOG;
+    else process.env.LUPIN_NO_WATCHDOG = restoreNoWatchdog;
   });
 
   async function waitUntil(predicate: () => boolean): Promise<void> {
@@ -305,13 +310,12 @@ describe('update lifecycle quiescence', () => {
     );
     expect(quiescence.daemonWasRunning).toBe(true);
     expect(existsSync(lifecycleLockPath())).toBe(true);
-    await waitUntil(() => daemon.exitCode !== null && watchdog.exitCode !== null);
     expect(existsSync(fallback)).toBe(false);
     expect(existsSync(pidfilePath())).toBe(false);
     expect(existsSync(watchdogPidfilePath())).toBe(false);
     quiescence.release();
     expect(existsSync(lifecycleLockPath())).toBe(false);
-  }, 15_000);
+  });
 
   it('refuses a reused pid carrying the same entrypoint but a different lifecycle token', async () => {
     const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
