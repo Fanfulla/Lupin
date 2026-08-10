@@ -20,6 +20,48 @@ export interface BootstrapDaemonDeps {
   ensureWatchdog: (port: number) => unknown;
 }
 
+export interface DaemonConfigLifecycle {
+  current: () => LupinConfig;
+  conflict: () => string | undefined;
+  adopt: (config: LupinConfig) => void;
+}
+
+export function createDaemonConfigLifecycle(initial: {
+  config: LupinConfig;
+  bootstrap: boolean;
+}): DaemonConfigLifecycle {
+  let current = initial.config;
+  let conflict: string | undefined;
+  const bound = initial.bootstrap ? { port: current.port, localToken: current.localToken } : undefined;
+  return {
+    current: () => current,
+    conflict: () => conflict,
+    adopt: (config) => {
+      if (conflict !== undefined) throw new Error(conflict);
+      if (bound !== undefined && (config.port !== bound.port || config.localToken !== bound.localToken)) {
+        conflict = `persisted config identity conflicts with bootstrap listener on port ${String(bound.port)}`;
+        throw new Error(conflict);
+      }
+      current = config;
+    },
+  };
+}
+
+export async function fetchWithDaemonConfigLifecycle(
+  request: Request,
+  lifecycle: DaemonConfigLifecycle,
+  fetchApp: (request: Request) => Response | Promise<Response>,
+): Promise<Response> {
+  const conflict = lifecycle.conflict();
+  if (conflict !== undefined) {
+    return new Response(JSON.stringify({ ok: false, error: conflict }), {
+      status: 409,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  return await fetchApp(request);
+}
+
 export function bootstrapDaemonEnv(identity: DaemonIdentity): Record<string, string> {
   return {
     LUPIN_BOOTSTRAP_PORT: String(identity.port),

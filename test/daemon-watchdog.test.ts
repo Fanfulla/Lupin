@@ -10,12 +10,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { LupinConfig } from '../src/config/config.js';
 import { networkError } from '../src/core/errors.js';
 import {
   bootstrapDaemonEnv,
+  createDaemonConfigLifecycle,
   ensureBootstrapDaemonWith,
   ensureWatchdog,
   entrypointArgs,
+  fetchWithDaemonConfigLifecycle,
   initialDaemonConfig,
   pidfilePath,
   serverHasIdentity,
@@ -212,6 +215,13 @@ describe('entrypointArgs (dev vs dist spawn)', () => {
 });
 
 describe('bootstrap daemon entry contract', () => {
+  const bootstrapConfig = (localToken: string): LupinConfig => ({
+    activeProfile: '',
+    port: 4567,
+    localToken,
+    profiles: {},
+  });
+
   it('passes the bootstrap identity only through child environment variables', () => {
     expect(bootstrapDaemonEnv({ port: 4567, localToken: 'ephemeral-token' })).toEqual({
       LUPIN_BOOTSTRAP_PORT: '4567',
@@ -302,5 +312,53 @@ describe('bootstrap daemon entry contract', () => {
 
     expect(startDaemon).not.toHaveBeenCalled();
     expect(ensureWatchdog).not.toHaveBeenCalled();
+  });
+
+  it('keeps the bound identity and fails authenticated readiness after a persisted identity conflict', async () => {
+    const bound = bootstrapConfig('bound-token');
+    const lifecycle = createDaemonConfigLifecycle({ config: bound, bootstrap: true });
+    const app = new Hono();
+    app.get('/v1/lupin/providers', (c) =>
+      c.req.header('authorization') === 'Bearer bound-token'
+        ? c.json({ ok: true, providers: [] })
+        : c.json({ ok: false }, 401),
+    );
+    const server: ServerType = serve({
+      fetch: (request) => fetchWithDaemonConfigLifecycle(request, lifecycle, app.fetch),
+      port: 0,
+      hostname: '127.0.0.1',
+    });
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    try {
+      expect(await serverHasIdentity({ port, localToken: 'bound-token' })).toBe(true);
+      expect(() => lifecycle.adopt(bootstrapConfig('persisted-token'))).toThrow(
+        /persisted config identity conflicts with bootstrap listener on port 4567/,
+      );
+      expect(lifecycle.current()).toEqual(bound);
+      expect(lifecycle.conflict()).toMatch(/persisted config identity conflicts/);
+      expect(await serverHasIdentity({ port, localToken: 'bound-token' })).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('adopts the first persisted config when it keeps the bootstrap identity', () => {
+    const bound = bootstrapConfig('bound-token');
+    const persisted = bootstrapConfig('bound-token');
+    persisted.activeProfile = 'test';
+    persisted.profiles['test'] = {
+      provider: 'moonshot',
+      mode: 'passthrough',
+      auth: { type: 'none' },
+      slots: { opus: 'model', sonnet: 'model', haiku: 'model' },
+    };
+    const lifecycle = createDaemonConfigLifecycle({ config: bound, bootstrap: true });
+
+    lifecycle.adopt(persisted);
+
+    expect(lifecycle.current()).toBe(persisted);
+    expect(lifecycle.conflict()).toBeUndefined();
   });
 });

@@ -3,7 +3,7 @@ import { existsSync, watchFile } from 'node:fs';
 import { defaultConfigPath, loadConfig } from '../config/config.js';
 import { credentialStoreLabel } from '../config/credentials.js';
 import { openBrowser } from '../cli/browser.js';
-import { initialDaemonConfig } from './daemon.js';
+import { createDaemonConfigLifecycle, fetchWithDaemonConfigLifecycle, initialDaemonConfig } from './daemon.js';
 import { createApp } from './ingress.js';
 import { createHealthTracker } from './health.js';
 import { installKeepAlive } from './dispatcher.js';
@@ -16,7 +16,8 @@ const configPath = defaultConfigPath();
 const health = createHealthTracker();
 const control = { openBrowser };
 const initial = initialDaemonConfig(configPath);
-let config = initial.config;
+const lifecycle = createDaemonConfigLifecycle(initial);
+let config = lifecycle.current();
 let app = createApp(config, { health, control });
 
 // Hot reload (SPEC-CLI §1 `lupin use`): a polling watch, reliable across
@@ -25,7 +26,8 @@ function reloadConfig(): void {
   try {
     const next = loadConfig(configPath);
     const prev = config.activeProfile;
-    config = next;
+    lifecycle.adopt(next);
+    config = lifecycle.current();
     app = createApp(next, { health, control });
     console.log(
       next.activeProfile === prev
@@ -53,9 +55,16 @@ if (initial.bootstrap) {
   watchConfig();
 }
 
-serve({ fetch: (req) => app.fetch(req), port: config.port, hostname: '127.0.0.1' }, (info) => {
+serve(
+  {
+    fetch: (req) => fetchWithDaemonConfigLifecycle(req, lifecycle, (request) => app.fetch(request)),
+    port: config.port,
+    hostname: '127.0.0.1',
+  },
+  (info) => {
   console.log(
     `[lupin] listening on http://127.0.0.1:${String(info.port)}: profile: ${config.activeProfile} (${configPath})`,
   );
   console.log(`[lupin] credentials: ${credentialStoreLabel()}`);
-});
+  },
+);
