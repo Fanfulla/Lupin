@@ -70,6 +70,21 @@ describe('hub cold start', () => {
     expect(existsSync(defaultConfigPath())).toBe(false);
   });
 
+  it('uses config that appears during the asynchronous sidecar probe instead of starting bootstrap', async () => {
+    const startBootstrap = vi.fn<HubDeps['startBootstrap']>(async () => 'started');
+    const spawnTui = vi.fn<HubDeps['spawnTui']>(async () => 0);
+    const tuiAvailable = async () => {
+      saveConfig(configured());
+      return true;
+    };
+
+    const result = await hubCommandWith(runtime({ tuiAvailable, startBootstrap, spawnTui }));
+
+    expect(result).toBe(0);
+    expect(startBootstrap).not.toHaveBeenCalled();
+    expect(spawnTui).toHaveBeenCalledWith({ PATH: 'test-path' });
+  });
+
   it('does not probe the sidecar or start a daemon without a TTY', async () => {
     const tuiAvailable = vi.fn<HubDeps['tuiAvailable']>(async () => true);
     const startBootstrap = vi.fn<HubDeps['startBootstrap']>(async () => 'started');

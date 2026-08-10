@@ -9,14 +9,16 @@ import type { ServerType } from '@hono/node-server';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { networkError } from '../src/core/errors.js';
 import {
   bootstrapDaemonEnv,
+  ensureBootstrapDaemonWith,
   ensureWatchdog,
   entrypointArgs,
   initialDaemonConfig,
   pidfilePath,
+  serverHasIdentity,
   watchdogPidfilePath,
 } from '../src/server/daemon.js';
 import { DAEMON_DOWN_MESSAGE, holdPortDown } from '../src/server/watchdog.js';
@@ -243,5 +245,62 @@ describe('bootstrap daemon entry contract', () => {
       bootstrap: false,
       config: { ...loaded, activeProfile: 'config.json' },
     });
+  });
+
+  it('checks the requested token on a protected endpoint instead of accepting public health', async () => {
+    const app = new Hono();
+    app.get('/health', (c) => c.json({ ok: true }));
+    app.get('/v1/lupin/providers', (c) =>
+      c.req.header('authorization') === 'Bearer expected-token'
+        ? c.json({ ok: true, providers: [] })
+        : c.json({ ok: false }, 401),
+    );
+    const server: ServerType = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' });
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    try {
+      expect(await serverHasIdentity({ port, localToken: 'expected-token' })).toBe(true);
+      expect(await serverHasIdentity({ port, localToken: 'different-token' })).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('reuses an overlapping bootstrap only when it has the requested identity', async () => {
+    const startDaemon = vi.fn(async () => 'started' as const);
+    const ensureWatchdog = vi.fn();
+    const result = await ensureBootstrapDaemonWith(
+      { port: 4567, localToken: 'expected-token' },
+      {
+        serverAlive: async () => true,
+        identityAlive: async () => true,
+        startDaemon,
+        ensureWatchdog,
+      },
+    );
+
+    expect(result).toBe('already-running');
+    expect(startDaemon).not.toHaveBeenCalled();
+    expect(ensureWatchdog).toHaveBeenCalledWith(4567);
+  });
+
+  it('refuses an identity-mismatched daemon without starting or replacing it', async () => {
+    const startDaemon = vi.fn(async () => 'started' as const);
+    const ensureWatchdog = vi.fn();
+    await expect(
+      ensureBootstrapDaemonWith(
+        { port: 4567, localToken: 'expected-token' },
+        {
+          serverAlive: async () => true,
+          identityAlive: async () => false,
+          startDaemon,
+          ensureWatchdog,
+        },
+      ),
+    ).rejects.toThrow(/different daemon is already running on port 4567/);
+
+    expect(startDaemon).not.toHaveBeenCalled();
+    expect(ensureWatchdog).not.toHaveBeenCalled();
   });
 });

@@ -58,7 +58,7 @@ export interface HubDeps {
 const NO_CONFIG = 'no config yet: run `lupin init` first';
 
 export async function hubCommandWith(deps: HubDeps): Promise<number> {
-  const configured = deps.configExists();
+  let configured = deps.configExists();
   if (configured) {
     try {
       deps.loadConfig();
@@ -68,15 +68,27 @@ export async function hubCommandWith(deps: HubDeps): Promise<number> {
     }
   }
 
-  if (deps.isTTY && (await deps.tuiAvailable())) {
-    if (configured) return await deps.spawnTui(deps.env);
-    const identity: BootstrapIdentity = { port: 3456, localToken: deps.randomToken() };
-    await deps.startBootstrap(identity);
-    return await deps.spawnTui({
-      ...deps.env,
-      LUPIN_BOOTSTRAP_PORT: String(identity.port),
-      LUPIN_BOOTSTRAP_TOKEN: identity.localToken,
-    });
+  if (deps.isTTY) {
+    const available = await deps.tuiAvailable();
+    if (!configured && deps.configExists()) {
+      try {
+        deps.loadConfig();
+        configured = true;
+      } catch {
+        deps.error(NO_CONFIG);
+        return 1;
+      }
+    }
+    if (available) {
+      if (configured) return await deps.spawnTui(deps.env);
+      const identity: BootstrapIdentity = { port: 3456, localToken: deps.randomToken() };
+      await deps.startBootstrap(identity);
+      return await deps.spawnTui({
+        ...deps.env,
+        LUPIN_BOOTSTRAP_PORT: String(identity.port),
+        LUPIN_BOOTSTRAP_TOKEN: identity.localToken,
+      });
+    }
   }
 
   if (!configured) {

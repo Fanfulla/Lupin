@@ -10,6 +10,15 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, validateConfig, type LupinConfig } from '../config/config.js';
 
 type DaemonIdentity = Pick<LupinConfig, 'port' | 'localToken'>;
+type DaemonResult = 'already-running' | 'started';
+type ReadinessProbe = (port: number) => Promise<boolean>;
+
+export interface BootstrapDaemonDeps {
+  serverAlive: ReadinessProbe;
+  identityAlive: (identity: DaemonIdentity) => Promise<boolean>;
+  startDaemon: (port: number, serverEnv: Record<string, string>, readiness: ReadinessProbe) => Promise<DaemonResult>;
+  ensureWatchdog: (port: number) => unknown;
+}
 
 export function bootstrapDaemonEnv(identity: DaemonIdentity): Record<string, string> {
   return {
@@ -95,21 +104,58 @@ export async function ensureDaemon(port: number): Promise<'already-running' | 's
   return await ensureDaemonWith(port);
 }
 
+export async function serverHasIdentity(identity: DaemonIdentity): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${String(identity.port)}/v1/lupin/providers`, {
+      headers: { authorization: `Bearer ${identity.localToken}` },
+      signal: AbortSignal.timeout(1000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureBootstrapDaemon(identity: DaemonIdentity): Promise<'already-running' | 'started'> {
-  return await ensureDaemonWith(identity.port, bootstrapDaemonEnv(identity));
+  return await ensureBootstrapDaemonWith(identity, {
+    serverAlive,
+    identityAlive: serverHasIdentity,
+    startDaemon: async (port, serverEnv, readiness) =>
+      await ensureDaemonWith(port, serverEnv, readiness, serverAlive),
+    ensureWatchdog,
+  });
+}
+
+export async function ensureBootstrapDaemonWith(
+  identity: DaemonIdentity,
+  deps: BootstrapDaemonDeps,
+): Promise<DaemonResult> {
+  if (await deps.serverAlive(identity.port)) {
+    if (!(await deps.identityAlive(identity))) throw daemonIdentityConflict(identity.port);
+    deps.ensureWatchdog(identity.port);
+    return 'already-running';
+  }
+  return await deps.startDaemon(
+    identity.port,
+    bootstrapDaemonEnv(identity),
+    async () => await deps.identityAlive(identity),
+  );
 }
 
 async function ensureDaemonWith(
   port: number,
   serverEnv?: Record<string, string>,
-): Promise<'already-running' | 'started'> {
-  if (await serverAlive(port)) {
+  readiness: ReadinessProbe = serverAlive,
+  occupied: ReadinessProbe = readiness,
+): Promise<DaemonResult> {
+  if (await readiness(port)) {
     // §6.4 respawn gap (audit 2026-07-22): a watchdog that died while the
     // daemon lived was never replaced: every run verifies it, not just the
     // one that started the daemon.
     ensureWatchdog(port);
     return 'already-running';
   }
+  if (occupied !== readiness && (await occupied(port))) throw daemonIdentityConflict(port);
 
   const stale = readPidfile();
   if (stale !== undefined && !pidRunning(stale)) rmSync(pidfilePath(), { force: true }); // SPEC-CLI §6.4
@@ -128,12 +174,17 @@ async function ensureDaemonWith(
 
   for (let i = 0; i < 40; i++) {
     await new Promise((resolve) => setTimeout(resolve, 250));
-    if (await serverAlive(port)) {
+    if (await readiness(port)) {
       ensureWatchdog(port); // §6.4: cover a mid-session kill from now on
       return 'started';
     }
+    if (occupied !== readiness && (await occupied(port))) throw daemonIdentityConflict(port);
   }
   throw new Error(`server did not come up on port ${String(port)}: check ${logfilePath()}`);
+}
+
+function daemonIdentityConflict(port: number): Error {
+  return new Error(`different daemon is already running on port ${String(port)}; stop it or use its existing config`);
 }
 
 /**
