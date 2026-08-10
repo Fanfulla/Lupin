@@ -8,7 +8,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../src/server/ingress.js';
-import { loadConfig, saveConfig, type LupinConfig } from '../src/config/config.js';
+import { defaultConfigPath, loadConfig, saveConfig, type LupinConfig } from '../src/config/config.js';
+import { getCredential, getOAuthTokens } from '../src/config/credentials.js';
+import type { ControlDeps } from '../src/server/control.js';
 import { startFakePkce, type FakePkce } from './helpers/fake-pkce.js';
 
 let dir: string;
@@ -56,11 +58,57 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function appWithControl() {
-  return createApp(baseConfig(), { control: { openBrowser: () => undefined } });
+function appWithControl(control: Partial<ControlDeps> = {}, config: LupinConfig = baseConfig()) {
+  return createApp(config, { control: { openBrowser: () => undefined, ...control } });
 }
 
 const auth = { authorization: `Bearer ${TOKEN}` };
+const jsonAuth = { ...auth, 'content-type': 'application/json' };
+
+function setupKey(app: ReturnType<typeof appWithControl>, providerId: string, key: string) {
+  return app.request('/v1/lupin/setup-key', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ providerId, key }),
+  });
+}
+
+async function completePkceLogin(app: ReturnType<typeof appWithControl>): Promise<string> {
+  if (fake === undefined) throw new Error('PKCE fake not started');
+  const start = await app.request('/v1/lupin/login', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ provider: 'openai' }),
+  });
+  if (start.status !== 200) throw new Error(`login start answered ${String(start.status)}`);
+  const { job } = (await start.json()) as { job: string };
+
+  let url: string | undefined;
+  for (let i = 0; i < 50; i++) {
+    const poll = await app.request(`/v1/lupin/login/${job}`, { headers: auth });
+    const body = (await poll.json()) as { status: string; message?: string };
+    if (body.message !== undefined) {
+      url = body.message;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  if (url === undefined) throw new Error('login job did not publish an authorize URL');
+  const authorize = new URL(url);
+  const redirect = new URL(authorize.searchParams.get('redirect_uri') ?? '');
+  redirect.searchParams.set('code', fake.expectedCode);
+  redirect.searchParams.set('state', authorize.searchParams.get('state') ?? '');
+  await fetch(redirect);
+
+  let status = 'pending';
+  for (let i = 0; i < 100; i++) {
+    const poll = await app.request(`/v1/lupin/login/${job}`, { headers: auth });
+    status = ((await poll.json()) as { status: string }).status;
+    if (status !== 'pending') break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return status;
+}
 
 describe('control API guard', () => {
   it('rejects every control route without the local token', async () => {
@@ -89,6 +137,65 @@ describe('GET /v1/lupin/state', () => {
   });
 });
 
+describe('GET /v1/lupin/providers', () => {
+  it('lists non-local defaults with auth kind derived from the descriptor', async () => {
+    const res = await appWithControl().request('/v1/lupin/providers', { headers: auth });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { providers: { id: string; authKind: string }[] };
+    expect(body.providers.some((p) => p.id === 'ollama')).toBe(false);
+    expect(body.providers.find((p) => p.id === 'openai-sub')?.authKind).toBe('oauth');
+    expect(body.providers.find((p) => p.id === 'gpt')?.authKind).toBe('key');
+  });
+});
+
+describe('POST /v1/lupin/setup-key', () => {
+  it('does not save a key or profile when key verification fails', async () => {
+    const before = structuredClone(loadConfig().profiles);
+    const app = appWithControl({ testProviderKey: async () => ({ ok: false, detail: 'rejected by provider' }) });
+    const res = await setupKey(app, 'gpt', 'bad');
+    expect(res.status).toBe(400);
+    expect(getCredential('OPENAI_API_KEY')).toBeUndefined();
+    expect(loadConfig().profiles).toEqual(before);
+  });
+
+  it('saves the verified key and activates the matching default profile', async () => {
+    const app = appWithControl({ testProviderKey: async () => ({ ok: true, detail: 'connected' }) });
+    const res = await setupKey(app, 'gpt', 'verified-key');
+    expect(res.status).toBe(200);
+    expect(getCredential('OPENAI_API_KEY')).toBe('verified-key');
+    expect(loadConfig().activeProfile).toBe('gpt');
+    expect(loadConfig().profiles['gpt']?.provider).toBe('openai');
+  });
+
+  it('returns 404 for an unknown provider id without changing config', async () => {
+    const before = loadConfig();
+    const res = await setupKey(appWithControl(), 'missing', 'key');
+    expect(res.status).toBe(404);
+    expect(await res.text()).toContain('unknown provider');
+    expect(loadConfig()).toEqual(before);
+  });
+
+  it.each(['ollama', 'openai-sub'])('rejects the non-key profile %s', async (providerId) => {
+    const before = loadConfig();
+    const res = await setupKey(appWithControl(), providerId, 'key');
+    expect(res.status).toBe(400);
+    expect(loadConfig()).toEqual(before);
+  });
+
+  it('preserves the running daemon identity when setup bootstraps a missing config', async () => {
+    const bootstrap: LupinConfig = { activeProfile: '', port: 7788, localToken: TOKEN, profiles: {} };
+    const app = appWithControl({ testProviderKey: async () => ({ ok: true, detail: 'connected' }) }, bootstrap);
+    rmSync(defaultConfigPath());
+
+    const res = await setupKey(app, 'gpt', 'verified-key');
+    const persisted = loadConfig();
+    expect(res.status).toBe(200);
+    expect(persisted.port).toBe(7788);
+    expect(persisted.localToken).toBe(TOKEN);
+    expect(persisted.activeProfile).toBe('gpt');
+  });
+});
+
 describe('POST /v1/lupin/use', () => {
   it('switches the active profile on disk (the hot-reload write path)', async () => {
     const res = await appWithControl().request('/v1/lupin/use', {
@@ -112,54 +219,47 @@ describe('POST /v1/lupin/use', () => {
 });
 
 describe('POST /v1/lupin/login', () => {
-  it('runs a PKCE login as a job, stores the tokens, reports done', async () => {
+  it('verifies before saving a PKCE token and creates the subscription profile', async () => {
     fake = await startFakePkce();
-    // Point the openai descriptor at the fake auth server.
+    // Point the openai descriptor at the fake auth server while retaining its profile mapping.
     const { OAUTH_PROVIDERS } = await import('../src/providers/oauth.js');
     const real = OAUTH_PROVIDERS['openai'];
     if (real === undefined) throw new Error('openai descriptor missing');
+    if (real.defaultProfileId === undefined) throw new Error('openai default profile missing');
+    fake.def.defaultProfileId = real.defaultProfileId;
     OAUTH_PROVIDERS['openai'] = fake.def;
     try {
-      const app = appWithControl();
-      // Drive the loopback redirect by hand once the job publishes its URL.
-      const start = await app.request('/v1/lupin/login', {
-        method: 'POST',
-        headers: { ...auth, 'content-type': 'application/json' },
-        body: JSON.stringify({ provider: 'openai' }),
+      let verifiedBeforeWrite = false;
+      const app = appWithControl({
+        verifyToken: async () => {
+          verifiedBeforeWrite = getOAuthTokens('openai') === undefined;
+          return { ok: true, detail: 'verified' };
+        },
       });
-      expect(start.status).toBe(200);
-      const { job } = (await start.json()) as { job: string };
-
-      // Wait for the job to publish the authorize URL, then drive the redirect.
-      let url: string | undefined;
-      for (let i = 0; i < 50; i++) {
-        const poll = await app.request(`/v1/lupin/login/${job}`, { headers: auth });
-        const b = (await poll.json()) as { status: string; message?: string };
-        if (b.message !== undefined) {
-          url = b.message;
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 20));
-      }
-      expect(url).toBeDefined();
-      const u = new URL(url ?? '');
-      const redirect = new URL(u.searchParams.get('redirect_uri') ?? '');
-      redirect.searchParams.set('code', fake.expectedCode);
-      redirect.searchParams.set('state', u.searchParams.get('state') ?? '');
-      await fetch(redirect);
-
-      // Poll to done.
-      let status = 'pending';
-      for (let i = 0; i < 100; i++) {
-        const poll = await app.request(`/v1/lupin/login/${job}`, { headers: auth });
-        status = ((await poll.json()) as { status: string }).status;
-        if (status !== 'pending') break;
-        await new Promise((r) => setTimeout(r, 20));
-      }
+      const status = await completePkceLogin(app);
       expect(status).toBe('done');
-
-      const { getOAuthTokens } = await import('../src/config/credentials.js');
+      expect(verifiedBeforeWrite).toBe(true);
       expect(getOAuthTokens('openai')?.accessToken).toBe('pkce-access-token');
+      expect(loadConfig().profiles['openai-sub']?.provider).toBe('openaisub');
+    } finally {
+      OAUTH_PROVIDERS['openai'] = real;
+    }
+  });
+
+  it('persists neither token nor profile when PKCE token verification fails', async () => {
+    fake = await startFakePkce();
+    const { OAUTH_PROVIDERS } = await import('../src/providers/oauth.js');
+    const real = OAUTH_PROVIDERS['openai'];
+    if (real === undefined) throw new Error('openai descriptor missing');
+    if (real.defaultProfileId === undefined) throw new Error('openai default profile missing');
+    fake.def.defaultProfileId = real.defaultProfileId;
+    OAUTH_PROVIDERS['openai'] = fake.def;
+    try {
+      const app = appWithControl({ verifyToken: async () => ({ ok: false, detail: 'rejected token' }) });
+      const status = await completePkceLogin(app);
+      expect(status).toBe('error');
+      expect(getOAuthTokens('openai')).toBeUndefined();
+      expect(loadConfig().profiles['openai-sub']).toBeUndefined();
     } finally {
       OAUTH_PROVIDERS['openai'] = real;
     }

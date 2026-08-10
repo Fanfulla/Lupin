@@ -115,4 +115,16 @@ describe('a stale subscription profile is repaired at login', () => {
     expect(p?.provider).toBe('geminisub');
     expect(logs.join('\n')).toContain('created');
   });
+
+  it('a missing config starts with the supplied daemon identity', () => {
+    n++;
+    const path = join(dir, `config-${String(n)}.json`);
+    process.env.LUPIN_CONFIG = path;
+    ensureOAuthProfile(gemini!, undefined, undefined, { port: 7788, localToken: 'daemon-token' });
+
+    const config = read(path);
+    expect(config.port).toBe(7788);
+    expect(config.localToken).toBe('daemon-token');
+    expect(config.activeProfile).toBe('gemini-sub');
+  });
 });

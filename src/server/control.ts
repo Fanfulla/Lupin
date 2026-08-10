@@ -10,13 +10,17 @@
 
 import type { Context, Hono } from 'hono';
 import { randomBytes } from 'node:crypto';
+import { persistKeyProfile } from '../cli/init.js';
+import { ensureOAuthProfile, verifyToken, type BootstrapIdentity } from '../cli/login.js';
 import { loadConfig, saveConfig } from '../config/config.js';
 import { deleteOAuthTokens } from '../config/credentials.js';
+import { DEFAULT_PROFILES } from '../providers/defaults.js';
 import { findOAuthProvider, type OAuthProviderDef } from '../providers/oauth.js';
 import { runPkceLogin, type PkceLoginHooks } from './oauth-pkce.js';
 import { asDeviceFlow } from '../providers/oauth.js';
 import { pollDeviceToken, startDeviceAuthorization } from './oauth.js';
 import { setOAuthTokens } from '../config/credentials.js';
+import { testProviderKey } from './connectivity.js';
 
 type JobStatus = 'pending' | 'done' | 'error';
 
@@ -50,6 +54,16 @@ function sweepJobs(now: number = Date.now()): void {
 export interface ControlDeps {
   /** Opens the browser best-effort (the CLI's implementation; a no-op in tests). */
   openBrowser: (url: string) => void;
+  /** Connectivity seams keep failure-path tests local and deterministic. */
+  testProviderKey?: typeof testProviderKey;
+  verifyToken?: typeof verifyToken;
+}
+
+export interface ProviderCatalogRow {
+  id: string;
+  description: string;
+  authKind: 'key' | 'oauth';
+  suspensionWarning?: string;
 }
 
 /**
@@ -57,16 +71,57 @@ export interface ControlDeps {
  * route; the config itself is re-read from disk per request so a hot reload is
  * always honoured (these routes never see the rebuilt app as a problem).
  */
-export function registerControlRoutes(app: Hono, localToken: string, deps: ControlDeps): void {
+export function registerControlRoutes(app: Hono, bootstrapIdentity: BootstrapIdentity, deps: ControlDeps): void {
   const guard = (c: Context): Response | undefined => {
     const auth = c.req.header('authorization');
     const bearer = auth !== undefined && auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : undefined;
     const token = c.req.header('x-api-key') ?? bearer;
-    if (token === undefined || token !== localToken) {
+    if (token === undefined || token !== bootstrapIdentity.localToken) {
       return c.json({ type: 'error', error: { type: 'authentication_error', message: '[lupin] invalid local token' } }, 401);
     }
     return undefined;
   };
+
+  app.get('/v1/lupin/providers', (c) => {
+    const denied = guard(c);
+    if (denied !== undefined) return denied;
+    const providers: ProviderCatalogRow[] = DEFAULT_PROFILES.filter((d) => d.local !== true).map((d) => {
+      const warning = findOAuthProvider(d.provider)?.suspensionWarning;
+      return {
+        id: d.id,
+        description: d.description,
+        authKind: d.oauthOnly === true ? 'oauth' : 'key',
+        ...(warning !== undefined ? { suspensionWarning: warning } : {}),
+      };
+    });
+    return c.json({ ok: true, providers });
+  });
+
+  app.post('/v1/lupin/setup-key', async (c) => {
+    const denied = guard(c);
+    if (denied !== undefined) return denied;
+    let body: { providerId?: unknown; key?: unknown };
+    try {
+      body = (await c.req.json()) as { providerId?: unknown; key?: unknown };
+    } catch {
+      return c.json({ ok: false, error: 'expected a JSON body { providerId, key }' }, 400);
+    }
+    if (typeof body.providerId !== 'string' || body.providerId === '' || typeof body.key !== 'string' || body.key === '') {
+      return c.json({ ok: false, error: 'expected a JSON body { providerId, key }' }, 400);
+    }
+    const def = DEFAULT_PROFILES.find((d) => d.id === body.providerId);
+    if (def === undefined) return c.json({ ok: false, error: `unknown provider "${body.providerId}"` }, 404);
+    if (def.apiKeyEnv === undefined) {
+      return c.json({ ok: false, error: `provider "${body.providerId}" does not accept an API key` }, 400);
+    }
+    try {
+      const result = await persistKeyProfile(def, body.key, bootstrapIdentity, deps.testProviderKey ?? testProviderKey);
+      if (!result.ok) return c.json(result, 400);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  });
 
   // Full routing truth for the TUI: superset of /health, straight from disk.
   app.get('/v1/lupin/state', (c) => {
@@ -201,7 +256,7 @@ export function registerControlRoutes(app: Hono, localToken: string, deps: Contr
     }
     sweepJobs();
     const job = newJob('login');
-    void runLoginJob(job, def, body.acceptRisk === true, deps);
+    void runLoginJob(job, def, body.acceptRisk === true, bootstrapIdentity, deps);
     return c.json({ ok: true, job: job.id });
   });
 
@@ -234,7 +289,13 @@ export function registerControlRoutes(app: Hono, localToken: string, deps: Contr
   });
 }
 
-async function runLoginJob(job: Job, def: OAuthProviderDef, acceptRisk: boolean, deps: ControlDeps): Promise<void> {
+async function runLoginJob(
+  job: Job,
+  def: OAuthProviderDef,
+  acceptRisk: boolean,
+  bootstrapIdentity: BootstrapIdentity,
+  deps: ControlDeps,
+): Promise<void> {
   try {
     const hooks: PkceLoginHooks = {
       openBrowser: deps.openBrowser,
@@ -252,7 +313,10 @@ async function runLoginJob(job: Job, def: OAuthProviderDef, acceptRisk: boolean,
     } else {
       tokens = await runPkceLogin(def, hooks);
     }
+    const verdict = await (deps.verifyToken ?? verifyToken)(def, tokens);
+    if (!verdict.ok) throw new Error(verdict.detail);
     setOAuthTokens(def.id, tokens);
+    ensureOAuthProfile(def, undefined, verdict.models, bootstrapIdentity);
     job.status = 'done';
   } catch (e) {
     job.status = 'error';

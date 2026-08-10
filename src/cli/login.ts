@@ -25,6 +25,8 @@ import { pollDeviceToken, startDeviceAuthorization } from '../server/oauth.js';
 import { runPkceLogin } from '../server/oauth-pkce.js';
 import { openBrowser } from './browser.js';
 
+export type BootstrapIdentity = Pick<LupinConfig, 'port' | 'localToken'>;
+
 /** The OAuth-capable providers, read from the registry: never a hardcoded name. */
 function oauthProviderList(): string {
   return Object.values(OAUTH_PROVIDERS)
@@ -356,7 +358,12 @@ function slotsAreUntouchedDefaults(slots: ProfileConfig['slots']): boolean {
  * OAuth token does not spend there at all. This project has no config
  * migration, so login is the one moment where the mistake can be met.
  */
-export function ensureOAuthProfile(def: OAuthProviderDef, account?: string, discoveredModels?: string[]): void {
+export function ensureOAuthProfile(
+  def: OAuthProviderDef,
+  account?: string,
+  discoveredModels?: string[],
+  bootstrapIdentity?: BootstrapIdentity,
+): void {
   // The profile name is derived, not hardcoded: kimi-sub, openai-sub, gemini-sub.
   // A second account gets its own profile, `kimi-sub@work`, because a profile
   // is exactly "one credential plus its slots" (§4nonies): chaining them with
@@ -367,12 +374,10 @@ export function ensureOAuthProfile(def: OAuthProviderDef, account?: string, disc
   if (existsSync(defaultConfigPath())) {
     config = loadConfig();
   } else {
-    config = {
-      activeProfile: profileName,
-      port: 3456,
-      localToken: cryptoToken(),
-      profiles: {},
-    };
+    config =
+      bootstrapIdentity === undefined
+        ? { activeProfile: profileName, port: 3456, localToken: cryptoToken(), profiles: {} }
+        : { activeProfile: '', port: bootstrapIdentity.port, localToken: bootstrapIdentity.localToken, profiles: {} };
   }
   // A subscription can use a different provider and lane than the
   // pay-per-token one (OpenAI: openaisub + responses), so the descriptor may

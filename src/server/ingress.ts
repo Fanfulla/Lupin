@@ -159,7 +159,7 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
   app.post('/v1/messages/count_tokens', (c) => forward(c, '/v1/messages/count_tokens'));
 
   // Control API (TUI hub + simplified CLI): state, profile switch, OAuth jobs.
-  if (opts.control !== undefined) registerControlRoutes(app, config.localToken, opts.control);
+  if (opts.control !== undefined) registerControlRoutes(app, config, opts.control);
 
   async function forward(c: Context, path: string): Promise<Response> {
     const started = Date.now();

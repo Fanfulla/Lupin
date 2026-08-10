@@ -22,6 +22,7 @@ import { DOCTOR_MIN_CONTEXT, preflightContext } from '../doctor/plan.js';
 import { testProviderKey } from '../server/connectivity.js';
 import { banner } from './banner.js';
 import { offerRecommendedSkills } from './skills-offer.js';
+import type { BootstrapIdentity } from './login.js';
 
 export async function initCommand(): Promise<number> {
   if (!process.stdin.isTTY) {
@@ -329,6 +330,27 @@ export function mergeProfile(
   config.profiles[d.id] = profile;
   config.activeProfile = d.id;
   return config;
+}
+
+/** Verifies and persists one hosted default without the interactive init choices. */
+export async function persistKeyProfile(
+  d: DefaultProfileDef,
+  key: string,
+  bootstrapIdentity?: BootstrapIdentity,
+  testKey: typeof testProviderKey = testProviderKey,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const test = await testKey(d, key);
+  if (!test.ok) return { ok: false, error: test.detail };
+  if (d.apiKeyEnv === undefined) return { ok: false, error: `profile "${d.id}" has no API-key credential` };
+
+  setCredential(d.apiKeyEnv, key);
+  const existing = existsSync(defaultConfigPath())
+    ? loadConfig()
+    : bootstrapIdentity === undefined
+      ? undefined
+      : { activeProfile: '', port: bootstrapIdentity.port, localToken: bootstrapIdentity.localToken, profiles: {} };
+  saveConfig(mergeProfile(d, existing));
+  return { ok: true };
 }
 
 /** Raw-mode read: the key never echoes to the terminal (SPEC-CLI §1.2). */
