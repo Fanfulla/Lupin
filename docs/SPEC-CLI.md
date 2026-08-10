@@ -7,6 +7,14 @@ Measurable goal: from zero to a working Claude Code on a third-party provider in
 ### `lupin init`
 Interactive wizard: (1) pick a provider from the list, each with an honest description ("Kimi K3: passthrough, reliable" vs "Ollama: experimental, depends on the model"); (2) paste the API key, stored in the OS keychain (see §4), never echoed on screen; (3) an immediate connectivity test (one real 1-token request); (4) write `~/.lupin/config.json` with the profile and the local token; (5) print the two next commands (`lupin run -- claude` or `lupin use`). Idempotent: running it again adds profiles, it does not destroy them.
 
+### Bare `lupin`: TUI-native onboarding
+
+With a TTY and an available `lupin-tui` sidecar, bare `lupin` opens the hub. When no config exists, the hub starts an empty in-memory daemon and passes its loopback port and generated local token to the TUI. Nothing is persisted until a provider has been verified. The first saved profile must keep that bootstrap port and local token so the running TUI and daemon stay authenticated after the config appears.
+
+The add-provider screen reads the hosted defaults from the existing authenticated control API and labels each row `(OAuth)` or `(API key)`. API-key input stays masked; the daemon performs the same one-token connectivity check as `lupin init`, and a failed key saves neither the key nor a profile. OAuth starts as an in-memory daemon job, shows the browser URL when it is available, and is polled by the TUI until completion or failure. A provider carrying a suspension warning requires an explicit confirmation before the browser flow starts. Success refreshes the dashboard instead of spawning another command.
+
+This surface deliberately covers only hosted defaults and one account per OAuth provider. `lupin init` remains the CLI path for local-runtime discovery, model selection, routes, economy/failover offers, and the explicit save-anyway choice after a failed API-key check. `lupin login <provider> --account <label>` remains the path for multiple OAuth accounts. The TUI never spawns `lupin init` or `lupin login`; both front ends reuse the same verification and persistence functions behind the authenticated control API.
+
 ### `lupin use <profile> [--bg <profile>|none] [--opus <model>] [--sonnet <model>] [--haiku <model>]`
 Switches the active profile by writing the config; the server, when running, hot-reloads it (file watch or SIGHUP). No Claude Code restart is needed: the next request already uses the new profile. `--bg` overwrites the haiku slot with another profile (for example background traffic on Ollama).
 

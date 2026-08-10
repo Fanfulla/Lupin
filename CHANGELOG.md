@@ -7,6 +7,29 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
+## [0.2.4] - 2026-08-10
+
+### Added
+
+- **Provider onboarding now stays inside the optional Rust TUI.** On a machine
+  with no Lupin config, bare `lupin` starts a temporary empty daemon and opens
+  the hosted-provider catalogue with clear OAuth and API-key labels. API keys
+  remain masked and are tested before storage; OAuth rows show the browser URL,
+  poll in place, and require an explicit confirmation when the provider carries
+  an account-risk warning. A successful setup returns to the dashboard.
+
+### Fixed
+
+- **Cold-start daemon identity now survives the first saved profile.** The
+  profile keeps the bootstrap port and local token, conflicting identities are
+  refused, and an empty bootstrap config is normalized consistently while the
+  first provider is being created.
+- **Provider onboarding remains recoverable across retries and refreshes.** The
+  catalogue and selection survive key failures, OAuth cancellation and risk
+  cancellation; OAuth catalogue rows resolve to the correct flow; delayed
+  success refreshes no longer prevent `q` from restoring and leaving the
+  terminal.
+
 ## [0.2.3] - 2026-08-09
 
 ### Fixed

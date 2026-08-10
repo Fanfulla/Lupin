@@ -56,6 +56,21 @@ Record the date of the last manual pass here when it is done. As of 2026-07-29 i
 
 **Last driven pass: 2026-08-09**, on WSL through tmux `send-keys` (real terminal emulation, not a human hand, said for honesty). Covered against a live sandboxed daemon: the header showing `daemon DOWN` and then `daemon up` (steps 2), `2` switching the active profile with the config write observed on disk (step 3), `q` ending the session cleanly (step 4), and the whole agents mode (ADR-47): open with `a`, the unset `subagents` row on screen, `2` aiming it with the talking-line preview, Enter applying through the control API and the daemon writing `agents.subagents` to disk, Esc leaving the config untouched, `x` plus Enter removing the key, and a real request routed through the table (`ollama/l-mid`, `agentRoute` in the log line) rendering as `agent:subagents` in the request tail.
 
+### Cold-start provider onboarding
+
+Use a sandboxed empty `LUPIN_DIR`; never point this pass at the user's real config or credential store.
+
+1. Ensure `config.json` does not exist and `lupin-tui` is on `PATH`.
+2. Run `lupin` in a real terminal and confirm the add-provider list appears.
+3. Verify an OAuth row shows its browser URL and, after completion, returns to the dashboard.
+4. Verify an invalid API key stays masked, saves nothing, and offers retry.
+5. Confirm the resulting config keeps the bootstrap port/local token and the dashboard can switch or refresh.
+6. Exit with `q` and confirm the terminal is restored.
+
+Record credential-backed steps only after they actually occur. A non-secret pass may cover the provider list, masked invalid-key failure, bootstrap identity, refresh and terminal cleanup, but it does not prove OAuth completion or a successful third-party API-key save.
+
+**Partial non-secret driven pass: 2026-08-10**, in a Windows PTY against a dedicated bootstrap daemon and an empty temporary `LUPIN_DIR`. The built `lupin-tui` 0.2.4 showed the hosted-provider list and API-key labels; an invalid key rendered only as `********`, produced a retryable error, and left both `config.json` and `credentials.json` absent. Esc exited with code 0 and restored the alternate screen and cursor. Bare `lupin` could not be used safely because a different daemon already owned the default port, so the sidecar was launched directly with the isolated daemon identity and that existing process was left untouched. Not exercised and not claimed: an OAuth browser URL or completion, a successful key save, the first persisted profile retaining the bootstrap identity, dashboard switch/refresh after success, or dashboard exit with `q`.
+
 ## 4. What NOT to test
 
 No tests for: trivial CLI wiring, formatting of human output, internal details not observable from the contract (CLAUDE.md rule 2: no speculative work). The testable contract is: body in, body or events out.
