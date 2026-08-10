@@ -215,7 +215,9 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
 };
 
 export function findOAuthProvider(name: string): OAuthProviderDef | undefined {
-  return Object.values(OAUTH_PROVIDERS).find((d) => d.aliases.includes(name));
+  return Object.values(OAUTH_PROVIDERS).find(
+    (d) => d.id === name || d.defaultProfileId === name || d.aliases.includes(name),
+  );
 }
 
 // --- Multiple accounts on one provider (SPEC-PROVIDERS §4nonies, ADR-36) ----

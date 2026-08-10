@@ -73,14 +73,17 @@ function setupKey(app: ReturnType<typeof appWithControl>, providerId: string, ke
   });
 }
 
-async function completePkceLogin(app: ReturnType<typeof appWithControl>): Promise<string> {
+async function completePkceLogin(
+  app: ReturnType<typeof appWithControl>,
+  provider = 'openai',
+): Promise<{ startStatus: number; jobStatus?: string }> {
   if (fake === undefined) throw new Error('PKCE fake not started');
   const start = await app.request('/v1/lupin/login', {
     method: 'POST',
     headers: jsonAuth,
-    body: JSON.stringify({ provider: 'openai' }),
+    body: JSON.stringify({ provider }),
   });
-  if (start.status !== 200) throw new Error(`login start answered ${String(start.status)}`);
+  if (start.status !== 200) return { startStatus: start.status };
   const { job } = (await start.json()) as { job: string };
 
   let url: string | undefined;
@@ -107,7 +110,7 @@ async function completePkceLogin(app: ReturnType<typeof appWithControl>): Promis
     if (status !== 'pending') break;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  return status;
+  return { startStatus: start.status, jobStatus: status };
 }
 
 describe('control API guard', () => {
@@ -145,6 +148,16 @@ describe('GET /v1/lupin/providers', () => {
     expect(body.providers.some((p) => p.id === 'ollama')).toBe(false);
     expect(body.providers.find((p) => p.id === 'openai-sub')?.authKind).toBe('oauth');
     expect(body.providers.find((p) => p.id === 'gpt')?.authKind).toBe('key');
+  });
+
+  it('puts suspension warnings only on their OAuth profile rows', async () => {
+    const res = await appWithControl().request('/v1/lupin/providers', { headers: auth });
+    const body = (await res.json()) as {
+      providers: { id: string; authKind: string; suspensionWarning?: string }[];
+    };
+    expect(body.providers.find((p) => p.id === 'gemini-sub')?.suspensionWarning).toBeDefined();
+    expect(body.providers.find((p) => p.id === 'copilot-sub')?.suspensionWarning).toBeDefined();
+    expect(body.providers.filter((p) => p.authKind === 'key').every((p) => p.suspensionWarning === undefined)).toBe(true);
   });
 });
 
@@ -236,8 +249,8 @@ describe('POST /v1/lupin/login', () => {
           return { ok: true, detail: 'verified' };
         },
       });
-      const status = await completePkceLogin(app);
-      expect(status).toBe('done');
+      const result = await completePkceLogin(app);
+      expect(result).toEqual({ startStatus: 200, jobStatus: 'done' });
       expect(verifiedBeforeWrite).toBe(true);
       expect(getOAuthTokens('openai')?.accessToken).toBe('pkce-access-token');
       expect(loadConfig().profiles['openai-sub']?.provider).toBe('openaisub');
@@ -256,10 +269,31 @@ describe('POST /v1/lupin/login', () => {
     OAUTH_PROVIDERS['openai'] = fake.def;
     try {
       const app = appWithControl({ verifyToken: async () => ({ ok: false, detail: 'rejected token' }) });
-      const status = await completePkceLogin(app);
-      expect(status).toBe('error');
+      const result = await completePkceLogin(app);
+      expect(result).toEqual({ startStatus: 200, jobStatus: 'error' });
       expect(getOAuthTokens('openai')).toBeUndefined();
       expect(loadConfig().profiles['openai-sub']).toBeUndefined();
+    } finally {
+      OAUTH_PROVIDERS['openai'] = real;
+    }
+  });
+
+  it('starts OAuth login with the provider id advertised by the catalogue', async () => {
+    fake = await startFakePkce();
+    const { OAUTH_PROVIDERS } = await import('../src/providers/oauth.js');
+    const real = OAUTH_PROVIDERS['openai'];
+    if (real?.defaultProfileId === undefined) throw new Error('openai default profile missing');
+    fake.def.defaultProfileId = real.defaultProfileId;
+    OAUTH_PROVIDERS['openai'] = fake.def;
+    try {
+      const app = appWithControl({ verifyToken: async () => ({ ok: true, detail: 'verified' }) });
+      const catalogue = await app.request('/v1/lupin/providers', { headers: auth });
+      const body = (await catalogue.json()) as { providers: { id: string; authKind: string }[] };
+      const advertised = body.providers.find((p) => p.id === 'openai-sub' && p.authKind === 'oauth');
+      if (advertised === undefined) throw new Error('openai OAuth row missing from catalogue');
+
+      const result = await completePkceLogin(app, advertised.id);
+      expect(result).toEqual({ startStatus: 200, jobStatus: 'done' });
     } finally {
       OAUTH_PROVIDERS['openai'] = real;
     }

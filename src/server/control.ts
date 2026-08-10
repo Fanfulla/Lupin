@@ -86,7 +86,7 @@ export function registerControlRoutes(app: Hono, bootstrapIdentity: BootstrapIde
     const denied = guard(c);
     if (denied !== undefined) return denied;
     const providers: ProviderCatalogRow[] = DEFAULT_PROFILES.filter((d) => d.local !== true).map((d) => {
-      const warning = findOAuthProvider(d.provider)?.suspensionWarning;
+      const warning = d.oauthOnly === true ? findOAuthProvider(d.id)?.suspensionWarning : undefined;
       return {
         id: d.id,
         description: d.description,
