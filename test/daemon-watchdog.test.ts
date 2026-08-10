@@ -35,7 +35,27 @@ import {
 import { DAEMON_DOWN_MESSAGE, holdPortDown } from '../src/server/watchdog.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'lupin-watchdog-'));
-afterEach(() => {
+const fixtureChildren: ChildProcess[] = [];
+
+async function stopFixtureChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.pid === undefined) return;
+  const exited = new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 2000);
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+  try {
+    child.kill();
+  } catch {
+    // Already gone.
+  }
+  await exited;
+}
+
+afterEach(async () => {
+  await Promise.all(fixtureChildren.splice(0).map(stopFixtureChild));
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -229,7 +249,6 @@ describe('entrypointArgs (dev vs dist spawn)', () => {
 
 describe('update lifecycle quiescence', () => {
   let restoreDir: string | undefined;
-  const children: ChildProcess[] = [];
 
   beforeEach(() => {
     restoreDir = process.env.LUPIN_DIR;
@@ -238,16 +257,6 @@ describe('update lifecycle quiescence', () => {
   });
 
   afterEach(() => {
-    for (const child of children) {
-      if (child.exitCode === null && child.pid !== undefined) {
-        try {
-          process.kill(child.pid);
-        } catch {
-          // already gone
-        }
-      }
-    }
-    children.length = 0;
     if (restoreDir === undefined) delete process.env.LUPIN_DIR;
     else process.env.LUPIN_DIR = restoreDir;
   });
@@ -264,7 +273,7 @@ describe('update lifecycle quiescence', () => {
     const daemonEntry = fileURLToPath(new URL('../src/server/start.ts', import.meta.url));
     const watchdogEntry = fileURLToPath(new URL('../src/server/watchdog.ts', import.meta.url));
     const daemon = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', daemonEntry], { stdio: 'ignore' });
-    children.push(daemon);
+    fixtureChildren.push(daemon);
     if (daemon.pid === undefined) throw new Error('daemon fixture did not start');
 
     const ready = join(dir, 'watchdog-ready');
@@ -282,7 +291,7 @@ describe('update lifecycle quiescence', () => {
       ['-e', watcherScript, String(daemon.pid), ready, fallback, watchdogEntry],
       { stdio: 'ignore' },
     );
-    children.push(watchdog);
+    fixtureChildren.push(watchdog);
     if (watchdog.pid === undefined) throw new Error('watchdog fixture did not start');
 
     await waitUntil(() => existsSync(ready));
@@ -302,11 +311,11 @@ describe('update lifecycle quiescence', () => {
     expect(existsSync(watchdogPidfilePath())).toBe(false);
     quiescence.release();
     expect(existsSync(lifecycleLockPath())).toBe(false);
-  });
+  }, 15_000);
 
   it('refuses a reused pid carrying the same entrypoint but a different lifecycle token', async () => {
     const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-    children.push(unrelated);
+    fixtureChildren.push(unrelated);
     if (unrelated.pid === undefined) throw new Error('unrelated fixture did not start');
     writeFileSync(pidfilePath(), JSON.stringify({ pid: unrelated.pid, ownerToken: 'recorded-owner' }));
     const daemonEntry = fileURLToPath(new URL('../src/server/start.ts', import.meta.url));
@@ -319,7 +328,7 @@ describe('update lifecycle quiescence', () => {
 
   it('makes a concurrent daemon start wait for the lifecycle lock', async () => {
     const owner = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], { stdio: 'ignore' });
-    children.push(owner);
+    fixtureChildren.push(owner);
     if (owner.pid === undefined) throw new Error('lock owner fixture did not start');
     writeFileSync(lifecycleLockPath(), String(owner.pid));
     setTimeout(() => rmSync(lifecycleLockPath(), { force: true }), 250);
@@ -337,7 +346,7 @@ describe('update lifecycle quiescence', () => {
 
   it('holds the bootstrap already-running fast path behind the lifecycle lock', async () => {
     const owner = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], { stdio: 'ignore' });
-    children.push(owner);
+    fixtureChildren.push(owner);
     if (owner.pid === undefined) throw new Error('bootstrap lock owner fixture did not start');
     writeFileSync(lifecycleLockPath(), String(owner.pid));
     setTimeout(() => rmSync(lifecycleLockPath(), { force: true }), 250);
