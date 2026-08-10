@@ -29,7 +29,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Node >= 20](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)
 ![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178c6)
-![tests](https://img.shields.io/badge/tests-763%20node%20%2B%2045%20rust-success)
+![tests](https://img.shields.io/badge/tests-794%20node%20%2B%2077%20rust-success)
 
 </div>
 
@@ -39,20 +39,123 @@ Your whole setup lives in Claude Code, not in the model: MCP servers, skills, `C
 
 **Lupin changes the model. Nothing else moves.**
 
-## Sixty seconds
+## Start here
+
+### Prerequisites
+
+| Required | Why |
+|---|---|
+| Node.js 20 or newer | runs the proxy and CLI |
+| Claude Code on the PATH as `claude` | the harness Lupin launches |
+| One provider API key, subscription, or local runtime | the model that will answer |
+| Rust toolchain, optional | only for the terminal dashboard |
+
+Lupin supports Windows, macOS and Linux. The proxy binds only to
+`127.0.0.1`. Prompts and responses are never persisted.
+
+### Fastest path: CLI
+
+Start with the interactive wizard. It asks for a provider, keeps the key
+hidden, tests a real request, and saves only after verification succeeds.
 
 ```bash
-npx lupin-code@latest init            # wizard: provider, key, a real connectivity test
-npx lupin-code@latest run -- claude   # Claude Code, already routed
+npx lupin-code@latest init
+npx lupin-code@latest run -- claude
 ```
 
-If you keep it, install it once and drop the `npx`. Every example below uses the
-short command:
+That second command starts Claude Code with its API traffic pointed at Lupin.
+Your existing MCP servers, skills, hooks, plugins and project instructions stay
+where they already are.
+
+If you keep it, install it once and drop the `npx`. Every later example uses
+the short command:
 
 ```bash
-npm i -g lupin-code
+npm install -g lupin-code
 lupin --version
 ```
+
+### TUI-first setup
+
+The optional Rust sidecar lets a new install add a provider without running
+`init` or memorizing a login command. Build it once from a clone and put the
+binary on the PATH:
+
+```bash
+git clone https://github.com/Fanfulla/Lupin.git
+cd Lupin
+cargo build --release --manifest-path tui/Cargo.toml
+
+# macOS / Linux
+cp tui/target/release/lupin-tui ~/.cargo/bin/
+
+# Windows PowerShell
+Copy-Item tui/target/release/lupin-tui.exe "$HOME/.cargo/bin/"
+```
+
+Then install the CLI and open the hub:
+
+```bash
+npm install -g lupin-code
+lupin
+```
+
+With no configuration, `lupin` starts a temporary local bootstrap daemon and
+opens the add-provider screen. Nothing sensitive is written yet.
+
+1. Move with the arrows or `j` / `k`, then press `Enter`.
+2. An API-key row opens a masked field. Paste the key and press `Enter`.
+3. An OAuth row starts login and shows the browser URL while the TUI polls.
+4. Providers with account-suspension risk show the warning before login and
+   require an explicit confirmation.
+5. After verification succeeds, the dashboard appears with the new profile
+   active. The saved config keeps the same daemon identity, so the screen does
+   not disconnect during the transition.
+
+Local runtimes such as Ollama and LM Studio still use `lupin init`: their setup
+discovers live models and asks for slot choices, so it is intentionally a
+separate flow.
+
+### Choose the credential path
+
+| You have | Use |
+|---|---|
+| A hosted-provider API key | TUI row marked `API key`, or `lupin init` |
+| ChatGPT subscription | TUI row marked `OAuth`, or `lupin login openai` |
+| Kimi Code subscription | TUI row marked `OAuth`, or `lupin login kimi` |
+| Google Code Assist | TUI OAuth row, or `lupin login gemini --i-accept-the-risk` |
+| GitHub Copilot | TUI OAuth row, or `lupin login copilot --i-accept-the-risk` |
+| Ollama, LM Studio, llama.cpp or ds4 | `lupin init` with the runtime already running |
+
+### Verify the first session
+
+```bash
+lupin status             # daemon, active profile and resolved models
+lupin run -- claude      # start Claude Code through Lupin
+lupin top                # optional live routing view in another terminal
+```
+
+Inside Claude Code, ask for a small tool-backed task rather than asking the
+model to identify itself. The model sees Claude Code's system prompt and may
+call itself Claude; `lupin status`, the TUI and `GET /health` are the routing
+truth.
+
+### If the first run fails
+
+| Symptom | Check |
+|---|---|
+| `lupin` prints text instead of opening the dashboard | run `lupin-tui --version`; the sidecar must be on the PATH and stdout must be a terminal |
+| `no config yet` | run `lupin init`, or install the sidecar and run bare `lupin` in a real terminal |
+| `daemon not answering` | run `lupin status`, then restart with `lupin stop` followed by `lupin run -- claude` |
+| API key rejected | retry the masked field or rerun `lupin init`; failed verification saves nothing |
+| OAuth browser did not open | copy the URL shown in the terminal; the CLI/TUI keeps polling |
+| port 3456 already in use | run `lupin status`; do not kill an unrelated process until you identify it |
+| Windows build cannot find `link.exe` or `kernel32.lib` | install MSVC Build Tools and the Windows SDK, then use `tui/build-msvc.bat --release` |
+
+Config, logs and credentials live under `~/.lupin` by default. `LUPIN_DIR`
+moves that whole directory. API keys and OAuth tokens live in the OS keychain
+when available, otherwise in a mode-600 credentials file. They never enter
+`config.json` or logs.
 
 Switch model with the session open, no restart:
 
@@ -60,34 +163,6 @@ Switch model with the session open, no restart:
 lupin use glm                # you are on GLM-5.2 from the next request
 lupin use gpt --bg kimi      # main on GPT, haiku-tier traffic on Kimi
 lupin go kimi-sub -- claude  # switch and launch, one gesture
-```
-
-Mix subagents, each agent type on its own model or provider:
-
-```bash
-lupin agents set subagents --profile ollama-qwen   # every subagent on the local model
-lupin agents set explore --profile kimi --wire     # a named agent, frontmatter written for you
-lupin agents                                       # the table, plus the id each agent uses
-```
-
-`lupin agents` prints an id per route (`claude-lupin-agent:<name>`). Put it in
-an agent's frontmatter `model:`, or let Lupin do even that: `--wire` writes
-the line into the agent's definition file (the one deliberate exception to
-"never touch your harness", on an explicit flag, old value printed, ADR-48),
-and the blanket `subagents` route travels through `CLAUDE_CODE_SUBAGENT_MODEL`,
-which `lupin run` sets for you. After that one-time aim, the agent is yours,
-live, from the CLI, the TUI (`a`) or the control API. There is
-no other honest way: Claude Code sends no header or metadata that identifies a
-subagent, so the model id is the one channel a proxy can route on, and the
-routing stays visible per request in the log (`agent:<name>` in `lupin top`).
-
-Use a subscription instead of an API key:
-
-```bash
-lupin login kimi      # device flow
-lupin login openai    # Sign in with ChatGPT
-lupin login gemini --i-accept-the-risk
-lupin login copilot --i-accept-the-risk
 ```
 
 Or without leaving Claude Code at all: open `/model` and pick a row that reads
@@ -239,6 +314,20 @@ API, `Esc` throws the edit away. The daemon writes the config and hot-reloads
 it, so a live Claude Code session picks the new routing up on its next request.
 Model-string targets and brand-new route names are one command away in
 `lupin agents set`, and the overlay says so rather than hiding the limit.
+
+The CLI exposes the same advanced routing without opening the dashboard:
+
+```bash
+lupin agents set subagents --profile ollama-qwen   # every subagent on the local model
+lupin agents set explore --profile kimi --wire     # wire one named agent to Kimi
+lupin agents                                       # inspect routes and model ids
+```
+
+`lupin agents` prints `claude-lupin-agent:<name>` for each route. Use that id
+in an agent definition's `model:` field, or pass `--wire` to update that one
+field explicitly. The blanket `subagents` route is carried by
+`CLAUDE_CODE_SUBAGENT_MODEL`, which `lupin run` sets for you. Each routed
+request remains visible as `agent:<name>` in `lupin top` and the log.
 
 The doctor takes minutes, so it runs as a child process and its output streams
 into a panel while the dashboard keeps refreshing underneath. Provider setup is

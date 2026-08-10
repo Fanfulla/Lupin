@@ -36,7 +36,34 @@ lupin            # the hub: TUI if the sidecar is on the PATH, else a text statu
 lupin-tui        # directly, the same screen
 ```
 
-The TUI needs a config: with none it prints `no config yet: run \`lupin init\` first` and exits 1. It talks only to 127.0.0.1 and reads only local files.
+When bare `lupin` runs in a real terminal with the sidecar on the PATH, a
+missing config starts the native add-provider flow. Direct `lupin-tui` still
+needs either a config or the bootstrap identity supplied by the hub. Every
+connection stays on 127.0.0.1.
+
+## First provider on a cold start
+
+```sh
+lupin
+```
+
+With no config, the hub starts a temporary empty-profile daemon and the TUI
+fetches the hosted-provider catalogue from `GET /v1/lupin/providers`.
+
+1. Select a provider with arrows or `j` / `k` and press `Enter`.
+2. `API key` rows open a masked field. Failed verification saves neither the
+   key nor a profile and returns to the existing list for retry.
+3. `OAuth` rows start an asynchronous login job. The TUI displays the browser
+   URL and polls until completion, denial, timeout or network failure.
+4. A provider carrying account-suspension risk shows the warning first and
+   requires explicit confirmation.
+5. On success, the daemon persists the first profile with its existing port
+   and local token. The TUI refreshes into the normal dashboard without losing
+   the connection.
+
+The native screen lists hosted providers only. Ollama, LM Studio, llama.cpp
+and ds4 discovery stays in `lupin init`, as do multi-account labels and the
+CLI-only save-anyway escape hatch.
 
 ## The screen, panel by panel
 
@@ -56,7 +83,7 @@ the facts.
 
 ```
 ╭────────────────────────────────────────────────────────────────────────╮
-│⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.1.0   the gentleman router
+│⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.2.4   the gentleman router
 │⠈⢿⣿⣿⣿⣿⣿⣷⣖⠀⠀⠀⠀⠀⠀⠀  daemon up   127.0.0.1:3456
 │⠀⠴⢿⣿⣿⣿⣿⣿⣿⣀⠀⠀⠀⠀⠀⠀  active: kimi-sub  ->  k3
 │⠀⠀⠈⠛⢿⠿⣿⣿⣿⣿⣿⣶⣶⣶⣤⣄  FREE tier (free models, free limits)
@@ -104,13 +131,20 @@ Each recent request can carry the routing truth inline, exactly like `lupin logs
 
 | Key | Action |
 |---|---|
-| `q` / `Esc` / `Ctrl-C` | quit (the terminal is restored on every exit path, panics included) |
+| `q` / `Esc` | quit from the dashboard; onboarding uses them as context-specific exit or cancel keys |
+| `Ctrl-C` | global exit from every dashboard and onboarding state |
 | `1` - `9` | switch the active profile to the row carrying that number |
 | `↑` / `↓` (or `k` / `j`) | move the cursor over the profile rows (the highlighted row) |
 | `Enter` | switch the active profile to the row under the cursor |
 | `r` | refresh now, without waiting for the next tick |
+| `d` | run the doctor for the highlighted profile and stream its output in the job panel |
+| `:` | open the command palette for `doctor`, `usage`, `list`, `status` and `stop`; `run` remains shell-only |
 | `o` | order mode: type the profile numbers in the order automatic switches should follow (previewed by name in the status line), `Enter` applies, `Esc` cancels |
 | `a` | agents mode: aim the per-subagent routes (SPEC-PROVIDERS §4decies). `↑`/`↓` pick a route, `1`-`9` aim it at that profile, `x` clears it, `Enter` applies, `Esc` cancels |
+
+Onboarding is modal. `q` exits loading, provider selection, risk confirmation,
+OAuth waiting, errors and success. In the masked API-key field `q` is ordinary
+text, so `Ctrl-C` is the global exit and the footer says so explicitly.
 
 The `1`-`9` hotkeys act immediately; the cursor path is two-step on purpose, so
 scrolling the list never fires a switch by accident. The cursor stays on a real
@@ -148,9 +182,10 @@ The TUI reads the same paths as the Node side; nothing is configured separately.
 |---|---|
 | `LUPIN_DIR` | Moves the whole Lupin home (config, log, credentials). The TUI honours it exactly like the daemon (the split-brain lesson of 2026-07-24). Default `~/.lupin`. |
 | `LUPIN_CONFIG` | Overrides the config file path only. |
-| Config file | `~/.lupin/config.json`: profiles, slots, the active profile, the port, the localToken. Read directly, never written by the TUI. |
+| Config file | `~/.lupin/config.json`: profiles, slots, the active profile, the port, the localToken. Read directly, never written by the Rust process; onboarding asks the Node control API to write it. |
 | Log file | `~/.lupin/lupin.log`: the recent-requests tail. Only the last 64 KB are read, and a partial first line is dropped. |
 | Control API | `http://127.0.0.1:<port>/v1/lupin/*`, guarded by the config's `localToken` (401 without it). |
+| Bootstrap identity | `LUPIN_BOOTSTRAP_PORT` plus `LUPIN_BOOTSTRAP_TOKEN`, supplied only by bare `lupin` while no config exists. A normal config takes precedence. |
 
 ## Fallback behaviour
 
@@ -159,11 +194,16 @@ The TUI reads the same paths as the Node side; nothing is configured separately.
 | Sidecar not on the PATH | bare `lupin` prints status plus the next steps; `lupin top` still works with no sidecar |
 | Not a terminal (piped) | bare `lupin` prints the text status, never a repainting screen in a pipe |
 | Daemon down | the header says `daemon DOWN`, health and "serving now" show as unknown, the screen keeps working |
-| No config | `no config yet: run \`lupin init\` first`, exit 1 |
+| No config, TTY and sidecar available | bare `lupin` starts the bootstrap daemon and opens add-provider |
+| No config without a TTY or sidecar | the text fallback says to run `lupin init`; no repainting UI is attempted |
+| Direct `lupin-tui` without config or bootstrap identity | exits honestly because it has no authenticated daemon identity |
 
 ## Troubleshooting
 
 - **`lupin` does not open the TUI**: the sidecar is not on the PATH or stdout is not a terminal. Check `lupin-tui --version`; if it errors, the binary is not reachable. The text fallback is the intended behaviour, not a failure.
 - **Build fails with `linker link.exe not found` or `cannot open input file 'kernel32.lib'` (Windows)**: the MSVC Build Tools or the Windows SDK are missing. Install them, then build with `build-msvc.bat --release`.
+- **An API key is rejected**: the masked field stays retryable and nothing is saved. Check the provider account, key scope and endpoint, then retry or use `lupin init` for the CLI save-anyway prompt.
+- **The OAuth browser does not open**: copy the URL displayed by the TUI into a browser. The login job keeps polling in the terminal.
+- **`daemon not answering: restart with \`lupin\`` during onboarding**: exit and run bare `lupin` again. There is no configured session for `lupin run -- claude` to repair yet.
 - **A switch does not move the active profile**: the daemon is down (the control API is unreachable) or returned an error. The talking line says which of the two it was; start the daemon with `lupin run -- claude`.
 - **`401 invalid local token`**: the config's `localToken` changed while the daemon kept running with the old one. Restart the daemon.
