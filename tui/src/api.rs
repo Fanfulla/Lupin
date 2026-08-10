@@ -167,7 +167,7 @@ pub fn poll_login(identity: &BootstrapIdentity, job: &str) -> Result<LoginPoll, 
 pub fn setup_key(identity: &BootstrapIdentity, provider_id: &str, key: &str) -> Result<(), String> {
     let url = format!("http://127.0.0.1:{}/v1/lupin/setup-key", identity.port);
     let body = serde_json::json!({ "providerId": provider_id, "key": key });
-    let res = control_client()?
+    let res = setup_key_client()?
         .post(url)
         .header(
             reqwest::header::AUTHORIZATION,
@@ -184,6 +184,15 @@ pub fn setup_key(identity: &BootstrapIdentity, provider_id: &str, key: &str) -> 
 fn control_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_millis(1500))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn setup_key_client() -> Result<reqwest::blocking::Client, String> {
+    // Node may spend up to 15 seconds verifying the provider. The caller must
+    // wait for that authoritative save-or-reject answer, plus local overhead.
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())
 }
@@ -353,9 +362,14 @@ pub fn switch_profile(snap: &Snapshot, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_login_poll, parse_login_start, parse_providers, parse_setup_key, AuthKind, Health,
-        LoginStatus,
+        parse_login_poll, parse_login_start, parse_providers, parse_setup_key, setup_key, AuthKind,
+        Health, LoginStatus,
     };
+    use crate::config::BootstrapIdentity;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
 
     /// The reason `fetch_health` checks the status before parsing. The watchdog
     /// answers a 529 whose body is an Anthropic error object, and nothing in
@@ -453,5 +467,29 @@ mod tests {
             parse_setup_key(400, r#"{"ok":false,"error":"invalid key"}"#),
             Err("invalid key".to_string())
         );
+    }
+
+    #[test]
+    fn setup_key_waits_past_the_shared_control_timeout_for_the_authoritative_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("setup-key connection");
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            thread::sleep(Duration::from_millis(1_650));
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+            );
+        });
+        let identity = BootstrapIdentity {
+            port,
+            local_token: "local-token".to_string(),
+        };
+
+        let result = setup_key(&identity, "provider", "delayed-key");
+        server.join().expect("delayed server");
+
+        assert_eq!(result, Ok(()));
     }
 }

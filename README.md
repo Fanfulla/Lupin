@@ -241,10 +241,11 @@ Model-string targets and brand-new route names are one command away in
 `lupin agents set`, and the overlay says so rather than hiding the limit.
 
 The doctor takes minutes, so it runs as a child process and its output streams
-into a panel while the dashboard keeps refreshing underneath. The palette lists
-`init`, `login` and `run` too, and says plainly that they need a shell: the first
-reads hidden input, the second waits on a browser, and the third hands the
-terminal to Claude Code.
+into a panel while the dashboard keeps refreshing underneath. Provider setup is
+native to the TUI: the add-provider screen handles hosted API keys and OAuth,
+including browser polling and risk confirmation, without spawning `init` or
+`login`. The palette runs `doctor`, `usage`, `list`, `status` and `stop`. Its only
+shell-only row is `run`, because Claude Code needs to own the terminal.
 
 Give it 32 rows or more and it draws the portrait full size; below that it keeps
 every fact and shrinks the art. It needs a real terminal: it takes over the

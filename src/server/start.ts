@@ -3,7 +3,12 @@ import { existsSync, watchFile } from 'node:fs';
 import { defaultConfigPath, loadConfig } from '../config/config.js';
 import { credentialStoreLabel } from '../config/credentials.js';
 import { openBrowser } from '../cli/browser.js';
-import { createDaemonConfigLifecycle, fetchWithDaemonConfigLifecycle, initialDaemonConfig } from './daemon.js';
+import {
+  createDaemonConfigLifecycle,
+  fetchWithDaemonConfigLifecycle,
+  initialDaemonConfig,
+  observeBootstrapConfigBeforeReload,
+} from './daemon.js';
 import { createApp } from './ingress.js';
 import { createHealthTracker } from './health.js';
 import { installKeepAlive } from './dispatcher.js';
@@ -51,8 +56,7 @@ if (initial.bootstrap) {
   const waitForConfig = setInterval(() => {
     if (!existsSync(configPath)) return;
     clearInterval(waitForConfig);
-    reloadConfig();
-    watchConfig();
+    observeBootstrapConfigBeforeReload(watchConfig, reloadConfig);
   }, 500);
   waitForConfig.unref();
 } else {

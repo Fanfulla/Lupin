@@ -209,7 +209,7 @@ pub fn render(
 
     render_recent(f, snap, chunks[2]);
     render_message(f, message, chunks[3]);
-    render_keys(f, chunks[4]);
+    render_keys(f, chunks[4], add_provider);
 
     // Overlays last: they sit ON the dashboard, which keeps refreshing under
     // them, so a two-minute doctor never freezes the screen it runs from.
@@ -351,7 +351,10 @@ fn render_agents(f: &mut Frame, edit: &AgentsEdit, area: Rect) {
                 .unwrap_or_else(|| "(unset)".to_string());
             let text = format!(" {name:<20} {label}");
             if i == edit.cursor {
-                Line::from(Span::styled(text, Style::default().add_modifier(Modifier::REVERSED)))
+                Line::from(Span::styled(
+                    text,
+                    Style::default().add_modifier(Modifier::REVERSED),
+                ))
             } else {
                 Line::from(Span::raw(text))
             }
@@ -799,14 +802,14 @@ fn render_message(f: &mut Frame, message: &str, area: Rect) {
     );
 }
 
-fn render_keys(f: &mut Frame, area: Rect) {
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "  q quit   1-9/arrows+enter switch   d doctor   : commands   o order   a agents   r refresh",
-            dim(),
-        ))),
-        area,
-    );
+fn render_keys(f: &mut Frame, area: Rect, add_provider: Option<&AddProviderMode>) {
+    let text = if add_provider.is_some_and(|mode| matches!(mode, AddProviderMode::KeyInput { .. }))
+    {
+        "  key input active   q types normally   ctrl-c quit"
+    } else {
+        "  q quit   1-9/arrows+enter switch   d doctor   : commands   o order   a agents   r refresh"
+    };
+    f.render_widget(Paragraph::new(Line::from(Span::styled(text, dim()))), area);
 }
 
 #[cfg(test)]
@@ -918,6 +921,8 @@ mod tests {
         });
         assert!(out.contains("API key: ********"), "{out}");
         assert!(!out.contains("secret-value"), "{out}");
+        assert!(!out.contains("q quit"), "{out}");
+        assert!(out.contains("ctrl-c quit"), "{out}");
     }
 
     #[test]
@@ -964,7 +969,10 @@ mod tests {
         };
         let edit = AgentsEdit {
             rows: vec![
-                ("explore".to_string(), Some(serde_json::json!({"profile": "local"}))),
+                (
+                    "explore".to_string(),
+                    Some(serde_json::json!({"profile": "local"})),
+                ),
                 ("subagents".to_string(), None),
             ],
             cursor: 0,

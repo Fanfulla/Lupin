@@ -181,6 +181,11 @@ fn run(
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+                // Ctrl-C is global: resolve it before an onboarding modal can
+                // route or consume the key.
+                if is_ctrl_c(key.code, key.modifiers) {
+                    return Ok(());
+                }
                 if let Some(mode) = add_provider.take() {
                     match handle_add_provider_key(
                         mode,
@@ -360,9 +365,6 @@ fn run(
                         message =
                             "agents mode: 1-9 aims the selected route at a profile, x clears, enter applies, esc cancels"
                                 .to_string();
-                    }
-                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        return Ok(())
                     }
                     KeyCode::Char('r') => {
                         snap = api::snapshot(cfg_path, bootstrap_identity);
@@ -545,6 +547,14 @@ fn handle_add_provider_key(
     cfg_path: &std::path::Path,
     message: &mut String,
 ) -> AddProviderAction {
+    // Exit keys are resolved before any modal state can consume them. `q` is
+    // excluded only while it is literal API-key input.
+    if is_ctrl_c(key, modifiers) {
+        return AddProviderAction::Exit;
+    }
+    if key == KeyCode::Char('q') && !matches!(&mode, AddProviderMode::KeyInput { .. }) {
+        return AddProviderAction::Exit;
+    }
     match mode {
         AddProviderMode::Loading => AddProviderAction::Stay(AddProviderMode::Loading),
         AddProviderMode::List {
@@ -693,13 +703,6 @@ fn handle_add_provider_key(
                 url,
             }),
         },
-        AddProviderMode::Success(_)
-            if key == KeyCode::Char('q')
-                || (key == KeyCode::Char('c')
-                    && modifiers.contains(event::KeyModifiers::CONTROL)) =>
-        {
-            AddProviderAction::Exit
-        }
         AddProviderMode::Success(message_text) => {
             AddProviderAction::Stay(AddProviderMode::Success(message_text))
         }
@@ -721,6 +724,10 @@ fn handle_add_provider_key(
             }),
         },
     }
+}
+
+fn is_ctrl_c(key: KeyCode, modifiers: event::KeyModifiers) -> bool {
+    key == KeyCode::Char('c') && modifiers.contains(event::KeyModifiers::CONTROL)
 }
 
 fn poll_provider_login(
@@ -984,6 +991,103 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_c_exits_from_every_onboarding_state() {
+        let states = vec![
+            AddProviderMode::Loading,
+            AddProviderMode::List {
+                providers: vec![provider(AuthKind::Key)],
+                cursor: 0,
+            },
+            AddProviderMode::ConfirmRisk {
+                provider: provider(AuthKind::Oauth),
+                providers: Vec::new(),
+                cursor: 0,
+            },
+            AddProviderMode::KeyInput {
+                provider: provider(AuthKind::Key),
+                providers: Vec::new(),
+                cursor: 0,
+                value: "secret".to_string(),
+            },
+            AddProviderMode::OAuthWaiting {
+                provider: provider(AuthKind::Oauth),
+                providers: Vec::new(),
+                cursor: 0,
+                job: "job-7".to_string(),
+                url: None,
+            },
+            AddProviderMode::Error {
+                message: "failed".to_string(),
+                providers: Vec::new(),
+                cursor: 0,
+                return_to_list: true,
+            },
+            AddProviderMode::Success("provider added".to_string()),
+        ];
+
+        for state in states {
+            assert!(matches!(
+                route_with_modifiers(state, KeyCode::Char('c'), KeyModifiers::CONTROL),
+                AddProviderAction::Exit
+            ));
+        }
+    }
+
+    #[test]
+    fn q_exits_every_non_text_onboarding_state() {
+        let states = vec![
+            AddProviderMode::Loading,
+            AddProviderMode::List {
+                providers: vec![provider(AuthKind::Key)],
+                cursor: 0,
+            },
+            AddProviderMode::ConfirmRisk {
+                provider: provider(AuthKind::Oauth),
+                providers: Vec::new(),
+                cursor: 0,
+            },
+            AddProviderMode::OAuthWaiting {
+                provider: provider(AuthKind::Oauth),
+                providers: Vec::new(),
+                cursor: 0,
+                job: "job-7".to_string(),
+                url: None,
+            },
+            AddProviderMode::Error {
+                message: "failed".to_string(),
+                providers: Vec::new(),
+                cursor: 0,
+                return_to_list: true,
+            },
+            AddProviderMode::Success("provider added".to_string()),
+        ];
+
+        for state in states {
+            assert!(matches!(
+                route(state, KeyCode::Char('q')),
+                AddProviderAction::Exit
+            ));
+        }
+    }
+
+    #[test]
+    fn q_is_literal_text_inside_key_input() {
+        let mode = stayed_mode(route(
+            AddProviderMode::KeyInput {
+                provider: provider(AuthKind::Key),
+                providers: Vec::new(),
+                cursor: 0,
+                value: "se".to_string(),
+            },
+            KeyCode::Char('q'),
+        ));
+        let AddProviderMode::KeyInput { value, .. } = mode else {
+            panic!("key input must stay active");
+        };
+        assert_eq!(value, "seq");
+    }
+
+    #[test]
     fn refresh_with_a_profile_returns_delayed_success_to_the_dashboard() {
         let config = serde_json::from_str(
             r#"{
@@ -1226,7 +1330,10 @@ mod tests {
     #[test]
     fn enter_applies_only_the_rows_that_still_have_a_target() {
         let rows = vec![
-            ("explore".to_string(), Some(serde_json::json!({"profile": "local"}))),
+            (
+                "explore".to_string(),
+                Some(serde_json::json!({"profile": "local"})),
+            ),
             ("planner".to_string(), None),
         ];
         let table = agents_table(&rows);

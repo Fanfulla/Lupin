@@ -20,6 +20,7 @@ import {
   entrypointArgs,
   fetchWithDaemonConfigLifecycle,
   initialDaemonConfig,
+  observeBootstrapConfigBeforeReload,
   pidfilePath,
   serverAlive,
   serverHasIdentity,
@@ -363,6 +364,35 @@ describe('bootstrap daemon entry contract', () => {
 
     expect(lifecycle.current()).toBe(persisted);
     expect(lifecycle.conflict()).toBeUndefined();
+  });
+
+  it('adopts revision B when it is written while bootstrap observation is established', () => {
+    const persisted = (name: string): LupinConfig => ({
+      activeProfile: name,
+      port: 4567,
+      localToken: 'bound-token',
+      profiles: {
+        [name]: {
+          provider: 'moonshot',
+          mode: 'passthrough',
+          auth: { type: 'none' },
+          slots: { opus: 'model', sonnet: 'model', haiku: 'model' },
+        },
+      },
+    });
+    const revisionA = persisted('revision-a');
+    const revisionB = persisted('revision-b');
+    let onDisk = revisionA;
+    const lifecycle = createDaemonConfigLifecycle({ config: bootstrapConfig('bound-token'), bootstrap: true });
+
+    observeBootstrapConfigBeforeReload(
+      () => {
+        onDisk = revisionB;
+      },
+      () => lifecycle.adopt(onDisk),
+    );
+
+    expect(lifecycle.current()).toBe(revisionB);
   });
 
   it('reconciles a persisted identity before returning authenticated readiness', async () => {

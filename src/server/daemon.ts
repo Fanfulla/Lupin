@@ -52,6 +52,14 @@ export function createDaemonConfigLifecycle(initial: {
   };
 }
 
+export function observeBootstrapConfigBeforeReload(
+  startObservation: () => void,
+  reload: () => void,
+): void {
+  startObservation();
+  reload();
+}
+
 export async function fetchWithDaemonConfigLifecycle(
   request: Request,
   lifecycle: DaemonConfigLifecycle,
