@@ -130,7 +130,7 @@ export const DEFAULT_PROFILES: DefaultProfileDef[] = [
       sonnet: 'deepseek/deepseek-v4-pro',
       haiku: 'deepseek/deepseek-v4-flash',
     },
-    verified: '2026-07-18',
+    verified: '2026-08-12 (slugs re-verified live against GET /api/v1/models, all with tools plus tool_choice)',
   },
   {
     id: 'gpt',
