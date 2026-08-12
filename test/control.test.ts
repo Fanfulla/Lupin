@@ -76,12 +76,13 @@ function setupKey(app: ReturnType<typeof appWithControl>, providerId: string, ke
 async function completePkceLogin(
   app: ReturnType<typeof appWithControl>,
   provider = 'openai',
+  extra: Record<string, unknown> = {},
 ): Promise<{ startStatus: number; jobStatus?: string }> {
   if (fake === undefined) throw new Error('PKCE fake not started');
   const start = await app.request('/v1/lupin/login', {
     method: 'POST',
     headers: jsonAuth,
-    body: JSON.stringify({ provider }),
+    body: JSON.stringify({ provider, ...extra }),
   });
   if (start.status !== 200) return { startStatus: start.status };
   const { job } = (await start.json()) as { job: string };
@@ -141,13 +142,28 @@ describe('GET /v1/lupin/state', () => {
 });
 
 describe('GET /v1/lupin/providers', () => {
-  it('lists non-local defaults with auth kind derived from the descriptor', async () => {
+  it('lists every default with auth kind derived from the descriptor (ADR-51: locals included)', async () => {
     const res = await appWithControl().request('/v1/lupin/providers', { headers: auth });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { providers: { id: string; authKind: string }[] };
-    expect(body.providers.some((p) => p.id === 'ollama')).toBe(false);
+    const body = (await res.json()) as {
+      providers: { id: string; authKind: string; economy?: string; startHint?: string }[];
+    };
+    expect(body.providers.find((p) => p.id === 'ollama')?.authKind).toBe('local');
+    expect(body.providers.find((p) => p.id === 'lmstudio')?.startHint).toBe('lms server start');
     expect(body.providers.find((p) => p.id === 'openai-sub')?.authKind).toBe('oauth');
     expect(body.providers.find((p) => p.id === 'gpt')?.authKind).toBe('key');
+    // The economy preset is advertised where the defaults declare one, so the
+    // TUI knows when to offer the choice the wizard used to make.
+    expect(body.providers.find((p) => p.id === 'kimi')?.economy).toBeDefined();
+    expect(body.providers.find((p) => p.id === 'gpt')?.economy).toBeUndefined();
+  });
+
+  it('marks OAuth rows importable when official CLI credentials exist', async () => {
+    const tokens = { accessToken: 'imported', expiresAt: Date.now() + 60_000, tokenType: 'Bearer' };
+    const res = await appWithControl({ importCredentials: () => tokens }).request('/v1/lupin/providers', { headers: auth });
+    const body = (await res.json()) as { providers: { id: string; authKind: string; importAvailable?: boolean }[] };
+    expect(body.providers.find((p) => p.id === 'openai-sub')?.importAvailable).toBe(true);
+    expect(body.providers.filter((p) => p.authKind !== 'oauth').every((p) => p.importAvailable === undefined)).toBe(true);
   });
 
   it('puts suspension warnings only on their OAuth profile rows', async () => {
@@ -195,6 +211,55 @@ describe('POST /v1/lupin/setup-key', () => {
     expect(loadConfig()).toEqual(before);
   });
 
+  it('writes the economy preset slots and routes on request', async () => {
+    const app = appWithControl({ testProviderKey: async () => ({ ok: true, detail: 'connected' }) });
+    const res = await app.request('/v1/lupin/setup-key', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({ providerId: 'kimi', key: 'k', economy: true }),
+    });
+    expect(res.status).toBe(200);
+    const profile = loadConfig().profiles['kimi'];
+    expect(profile?.slots.sonnet).not.toBe(profile?.slots.opus);
+    expect(profile?.routes?.thinking).toBeDefined();
+  });
+
+  it('sets a validated failover and refuses an unknown one', async () => {
+    const app = appWithControl({ testProviderKey: async () => ({ ok: true, detail: 'connected' }) });
+    const bad = await app.request('/v1/lupin/setup-key', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({ providerId: 'gpt', key: 'k', failover: 'nope' }),
+    });
+    expect(bad.status).toBe(404);
+    expect(loadConfig().profiles['gpt']).toBeUndefined();
+    const good = await app.request('/v1/lupin/setup-key', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({ providerId: 'gpt', key: 'k', failover: 'a' }),
+    });
+    expect(good.status).toBe(200);
+    expect(loadConfig().profiles['gpt']?.failover).toBe('a');
+  });
+
+  it('offers save-anyway on a failed test and honours the explicit retry', async () => {
+    const app = appWithControl({ testProviderKey: async () => ({ ok: false, detail: 'rejected by provider' }) });
+    const refused = await setupKey(app, 'gpt', 'suspect-key');
+    expect(refused.status).toBe(400);
+    expect(((await refused.json()) as { canSaveAnyway?: boolean }).canSaveAnyway).toBe(true);
+    expect(getCredential('OPENAI_API_KEY')).toBeUndefined();
+    expect(loadConfig().profiles['gpt']).toBeUndefined();
+
+    const saved = await app.request('/v1/lupin/setup-key', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({ providerId: 'gpt', key: 'suspect-key', saveAnyway: true }),
+    });
+    expect(saved.status).toBe(200);
+    expect(getCredential('OPENAI_API_KEY')).toBe('suspect-key');
+    expect(loadConfig().profiles['gpt']?.provider).toBe('openai');
+  });
+
   it('preserves the running daemon identity when setup bootstraps a missing config', async () => {
     const bootstrap: LupinConfig = { activeProfile: '', port: 7788, localToken: TOKEN, profiles: {} };
     const app = appWithControl({ testProviderKey: async () => ({ ok: true, detail: 'connected' }) }, bootstrap);
@@ -206,6 +271,119 @@ describe('POST /v1/lupin/setup-key', () => {
     expect(persisted.port).toBe(7788);
     expect(persisted.localToken).toBe(TOKEN);
     expect(persisted.activeProfile).toBe('gpt');
+  });
+});
+
+// A fake LM Studio: the /v1/models id list plus the native /api/v0/models
+// metadata, the two calls discovery really makes (SPEC-PROVIDERS §3ter).
+const lmFetch: typeof fetch = (input) => {
+  const url = String(input);
+  if (url.endsWith('/v1/models')) {
+    return Promise.resolve(Response.json({ data: [{ id: 'big' }, { id: 'small' }, { id: 'pixel' }] }));
+  }
+  if (url.endsWith('/api/v0/models')) {
+    return Promise.resolve(
+      Response.json({
+        data: [
+          { id: 'big', type: 'llm', loaded_context_length: 131072, capabilities: ['tool_use'] },
+          { id: 'small', type: 'llm', loaded_context_length: 8192, capabilities: [] },
+          { id: 'pixel', type: 'vlm', loaded_context_length: 131072, capabilities: ['tool_use'] },
+        ],
+      }),
+    );
+  }
+  return Promise.reject(new Error(`unexpected URL ${url}`));
+};
+
+describe('local setup through the control plane (ADR-51)', () => {
+  it('discovers chat models with windows, capability flags and the too-small verdict', async () => {
+    const res = await appWithControl({ fetchLocal: lmFetch }).request('/v1/lupin/discover-local', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({ providerId: 'lmstudio' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      models: { id: string; contextWindow?: number; supportsTools?: boolean; supportsVision?: boolean; contextTooSmall: boolean }[];
+    };
+    const big = body.models.find((m) => m.id === 'big');
+    const small = body.models.find((m) => m.id === 'small');
+    const pixel = body.models.find((m) => m.id === 'pixel');
+    expect(big).toMatchObject({ contextWindow: 131072, supportsTools: true, contextTooSmall: false });
+    expect(small?.contextTooSmall).toBe(true);
+    expect(small?.supportsTools).toBe(false);
+    expect(pixel?.supportsVision).toBe(true);
+  });
+
+  it('answers 502 with the start hint when the local server is down', async () => {
+    const down: typeof fetch = () => Promise.reject(new Error('ECONNREFUSED'));
+    const res = await appWithControl({ fetchLocal: down }).request('/v1/lupin/discover-local', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({ providerId: 'lmstudio' }),
+    });
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string; startHint?: string };
+    expect(body.error).toContain('unreachable');
+    expect(body.startHint).toBe('lms server start');
+  });
+
+  it('rejects a non-local provider id', async () => {
+    const res = await appWithControl({ fetchLocal: lmFetch }).request('/v1/lupin/discover-local', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({ providerId: 'gpt' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('writes the local profile with picks, windows, opt-in routes and failover', async () => {
+    const res = await appWithControl({ fetchLocal: lmFetch }).request('/v1/lupin/setup-local', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({
+        providerId: 'lmstudio',
+        main: 'big',
+        light: 'small',
+        vision: 'pixel',
+        longContext: true,
+        failover: 'a',
+      }),
+    });
+    expect(res.status).toBe(200);
+    const config = loadConfig();
+    expect(config.activeProfile).toBe('lmstudio');
+    const profile = config.profiles['lmstudio'];
+    expect(profile?.slots).toEqual({ opus: 'big', sonnet: 'big', haiku: 'small' });
+    expect(profile?.contextWindows).toEqual({ big: 131072, small: 8192 });
+    expect(profile?.routes).toEqual({ vision: { target: 'pixel' }, longContext: { target: 'big' } });
+    expect(profile?.failover).toBe('a');
+  });
+
+  it('refuses a model the server does not list, a non-vision candidate, and a groundless long-context route', async () => {
+    const app = appWithControl({ fetchLocal: lmFetch });
+    const post = (body: unknown) =>
+      app.request('/v1/lupin/setup-local', { method: 'POST', headers: jsonAuth, body: JSON.stringify(body) });
+    expect((await post({ providerId: 'lmstudio', main: 'ghost' })).status).toBe(404);
+    expect((await post({ providerId: 'lmstudio', main: 'big', vision: 'small' })).status).toBe(400);
+    expect((await post({ providerId: 'lmstudio', main: 'big', longContext: true })).status).toBe(400);
+    expect(loadConfig().profiles['lmstudio']).toBeUndefined();
+  });
+
+  it('bootstraps a missing config from the daemon identity, like setup-key', async () => {
+    const bootstrap: LupinConfig = { activeProfile: '', port: 7788, localToken: TOKEN, profiles: {} };
+    const app = appWithControl({ fetchLocal: lmFetch }, bootstrap);
+    rmSync(defaultConfigPath());
+    const res = await app.request('/v1/lupin/setup-local', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({ providerId: 'lmstudio', main: 'big' }),
+    });
+    expect(res.status).toBe(200);
+    const persisted = loadConfig();
+    expect(persisted.port).toBe(7788);
+    expect(persisted.localToken).toBe(TOKEN);
+    expect(persisted.profiles['lmstudio']?.slots.haiku).toBe('big');
   });
 });
 
@@ -320,6 +498,63 @@ describe('POST /v1/lupin/login', () => {
     }
   });
 
+  it('logs an account label into its own store key and derived profile (§4nonies)', async () => {
+    fake = await startFakePkce();
+    const { OAUTH_PROVIDERS } = await import('../src/providers/oauth.js');
+    const real = OAUTH_PROVIDERS['openai'];
+    if (real?.defaultProfileId === undefined) throw new Error('openai default profile missing');
+    fake.def.defaultProfileId = real.defaultProfileId;
+    OAUTH_PROVIDERS['openai'] = fake.def;
+    try {
+      const app = appWithControl({ verifyToken: async () => ({ ok: true, detail: 'verified' }) });
+      const result = await completePkceLogin(app, 'openai', { account: 'work' });
+      expect(result).toEqual({ startStatus: 200, jobStatus: 'done' });
+      expect(getOAuthTokens('openai#work')?.accessToken).toBe('pkce-access-token');
+      expect(getOAuthTokens('openai')).toBeUndefined();
+      expect(loadConfig().profiles['openai-sub@work']?.auth).toMatchObject({ type: 'oauth', provider: 'openai#work' });
+    } finally {
+      OAUTH_PROVIDERS['openai'] = real;
+    }
+  });
+
+  it('refuses an invalid account label before starting a job', async () => {
+    const res = await appWithControl().request('/v1/lupin/login', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({ provider: 'openai', account: 'not ok!' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('imports official CLI credentials on request, without a browser', async () => {
+    let browserOpened = false;
+    const tokens = { accessToken: 'imported-token', expiresAt: Date.now() + 60_000, tokenType: 'Bearer' };
+    const app = appWithControl({
+      openBrowser: () => {
+        browserOpened = true;
+      },
+      importCredentials: () => tokens,
+      verifyToken: async () => ({ ok: true, detail: 'verified' }),
+    });
+    const start = await app.request('/v1/lupin/login', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({ provider: 'openai', importIfAvailable: true }),
+    });
+    expect(start.status).toBe(200);
+    const { job } = (await start.json()) as { job: string };
+    let status = 'pending';
+    for (let i = 0; i < 100 && status === 'pending'; i++) {
+      const poll = await app.request(`/v1/lupin/login/${job}`, { headers: auth });
+      status = ((await poll.json()) as { status: string }).status;
+      if (status === 'pending') await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(status).toBe('done');
+    expect(browserOpened).toBe(false);
+    expect(getOAuthTokens('openai')?.accessToken).toBe('imported-token');
+    expect(loadConfig().profiles['openai-sub']?.provider).toBe('openaisub');
+  });
+
   it('blocks a suspension-risk provider without acceptRisk', async () => {
     const res = await appWithControl().request('/v1/lupin/login', {
       method: 'POST',
@@ -343,6 +578,20 @@ describe('POST /v1/lupin/logout', () => {
     });
     expect(res.status).toBe(200);
     expect(getOAuthTokens('openai')).toBeUndefined();
+  });
+
+  it('forgets only the named account and leaves the others (§4nonies)', async () => {
+    const { setOAuthTokens, getOAuthTokens } = await import('../src/config/credentials.js');
+    setOAuthTokens('openai', { accessToken: 'base', expiresAt: Date.now() + 1000, tokenType: 'Bearer' });
+    setOAuthTokens('openai#work', { accessToken: 'work', expiresAt: Date.now() + 1000, tokenType: 'Bearer' });
+    const res = await appWithControl().request('/v1/lupin/logout', {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', account: 'work' }),
+    });
+    expect(res.status).toBe(200);
+    expect(getOAuthTokens('openai#work')).toBeUndefined();
+    expect(getOAuthTokens('openai')?.accessToken).toBe('base');
   });
 });
 

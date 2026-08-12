@@ -17,7 +17,7 @@ import {
 import { credentialStoreLabel, setCredential } from '../config/credentials.js';
 import { DEFAULT_PROFILES, type DefaultProfileDef } from '../providers/defaults.js';
 import { PROVIDERS } from '../providers/registry.js';
-import { mergeProbe, persistableWindow, probeLocalModels, type LocalModelInfo } from '../providers/local.js';
+import { discoverChatModels, persistableWindow, type LocalModelInfo } from '../providers/local.js';
 import { DOCTOR_MIN_CONTEXT, preflightContext } from '../doctor/plan.js';
 import { testProviderKey } from '../server/connectivity.js';
 import { banner } from './banner.js';
@@ -189,31 +189,21 @@ async function initLocal(d: DefaultProfileDef, started: number): Promise<number>
     return 1;
   }
   // Model discovery always goes through the OpenAI-compat /v1/models surface,
-  // even for passthrough locals (Anthropic-native servers keep it on the same port).
-  const modelsUrl = `${def.translateBaseUrl ?? def.baseUrl}/models`;
-  console.log(`... querying ${modelsUrl}`);
-  let ids: string[];
-  try {
-    const res = await fetch(modelsUrl, { signal: AbortSignal.timeout(5000) });
-    if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
-    const body = (await res.json()) as { data?: { id?: unknown }[] };
-    ids = (body.data ?? [])
-      .map((m) => m.id)
-      .filter((x): x is string => typeof x === 'string' && !x.toLowerCase().includes('embed'));
-  } catch {
-    console.error(`✗ local server unreachable at ${modelsUrl}`);
+  // even for passthrough locals (Anthropic-native servers keep it on the same
+  // port), then the native metadata API answers, before a single token is
+  // spent, the question every competitor leaves to trial and error (§3ter).
+  console.log('... querying the local server');
+  const found = await discoverChatModels(def);
+  if (!found.ok) {
+    console.error(`✗ ${found.error}`);
     console.error(`  start it with:  ${d.startHint ?? '(see the provider documentation)'}  then run lupin init again`);
     return 1;
   }
-  if (ids.length === 0) {
+  if (found.models.length === 0) {
     console.error('the local server answers but has no models installed (embeddings excluded)');
     return 1;
   }
-
-  // The native metadata API answers, before a single token is spent, the
-  // question every competitor leaves to trial and error (SPEC-PROVIDERS §3ter).
-  const probed = mergeProbe(ids, await probeLocalModels(def));
-  const usable = probed.filter((m) => m.chat);
+  const usable = found.models;
   const noTools = usable.filter((m) => m.supportsTools === false);
   // Same floor the doctor enforces: a window too small to hold the harness
   // makes every request fail before the model is even asked (verified live
@@ -332,24 +322,46 @@ export function mergeProfile(
   return config;
 }
 
+/** Choices the TUI setup carries that the wizard used to ask (SPEC-CLI §1, ADR-51). */
+export interface KeySetupOptions {
+  economy?: boolean;
+  failover?: string;
+  /** Store key and profile even though the connectivity test failed: an explicit choice, never a default. */
+  saveAnyway?: boolean;
+}
+
 /** Verifies and persists one hosted default without the interactive init choices. */
 export async function persistKeyProfile(
   d: DefaultProfileDef,
   key: string,
   bootstrapIdentity?: BootstrapIdentity,
   testKey: typeof testProviderKey = testProviderKey,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+  opts: KeySetupOptions = {},
+): Promise<{ ok: true } | { ok: false; error: string; canSaveAnyway?: true }> {
+  if (opts.economy === true && d.economy === undefined) {
+    return { ok: false, error: `profile "${d.id}" has no economy preset` };
+  }
   const test = await testKey(d, key);
-  if (!test.ok) return { ok: false, error: test.detail };
+  // canSaveAnyway marks the one failure the caller may overrule: the provider
+  // said no, but the key might still be right (offline, quota, wrong region).
+  if (!test.ok && opts.saveAnyway !== true) return { ok: false, error: test.detail, canSaveAnyway: true };
   if (d.apiKeyEnv === undefined) return { ok: false, error: `profile "${d.id}" has no API-key credential` };
 
-  setCredential(d.apiKeyEnv, key);
   const existing = existsSync(defaultConfigPath())
     ? loadConfig()
     : bootstrapIdentity === undefined
       ? undefined
       : { activeProfile: '', port: bootstrapIdentity.port, localToken: bootstrapIdentity.localToken, profiles: {} };
-  saveConfig(mergeProfile(d, existing));
+  if (opts.failover !== undefined && (existing === undefined || !(opts.failover in existing.profiles) || opts.failover === d.id)) {
+    return { ok: false, error: `unknown failover profile "${opts.failover}"` };
+  }
+  setCredential(d.apiKeyEnv, key);
+  const merged = mergeProfile(d, existing, undefined, opts.economy === true);
+  if (opts.failover !== undefined) {
+    const profile = merged.profiles[d.id];
+    if (profile !== undefined) profile.failover = opts.failover;
+  }
+  saveConfig(merged);
   return { ok: true };
 }
 

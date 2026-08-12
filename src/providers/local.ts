@@ -212,3 +212,31 @@ export function mergeProbe(ids: readonly string[], probed: readonly LocalModelIn
   const byId = new Map(probed.map((p) => [p.id, p]));
   return ids.map((id) => byId.get(id) ?? { id, chat: true });
 }
+
+export type LocalDiscovery = { ok: true; models: LocalModelInfo[] } | { ok: false; error: string };
+
+/**
+ * The whole local discovery in one call, shared by every setup surface
+ * (SPEC-CLI §1, ADR-51): the OpenAI-compat /v1/models list stays authoritative
+ * for ids (embedders excluded by name), the native probe adds windows and
+ * capabilities, and non-chat models are dropped. An unreachable server is a
+ * verdict, not an exception.
+ */
+export async function discoverChatModels(def: ProviderDef, opts: ProbeOptions = {}): Promise<LocalDiscovery> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const modelsUrl = `${def.translateBaseUrl ?? def.baseUrl}/models`;
+  let ids: string[];
+  try {
+    const res = await fetchImpl(modelsUrl, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
+    const body = (await res.json()) as { data?: { id?: unknown }[] };
+    ids = (body.data ?? [])
+      .map((m) => m.id)
+      .filter((x): x is string => typeof x === 'string' && !x.toLowerCase().includes('embed'));
+  } catch {
+    return { ok: false, error: `local server unreachable at ${modelsUrl}` };
+  }
+  const probed = mergeProbe(ids, await probeLocalModels(def, opts));
+  return { ok: true, models: probed.filter((m) => m.chat) };
+}

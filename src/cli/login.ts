@@ -161,7 +161,7 @@ export function logoutCommand(args: string[]): number {
 }
 
 /** Reads the official CLI credential files (kimi-cli), tolerant on field names. */
-function importOfficialCredentials(def: OAuthProviderDef): OAuthTokens | undefined {
+export function importOfficialCredentials(def: OAuthProviderDef): OAuthTokens | undefined {
   for (const rel of def.importPaths) {
     const path = join(homedir(), rel);
     if (!existsSync(path)) continue;
