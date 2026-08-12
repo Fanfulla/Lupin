@@ -278,6 +278,27 @@ describe('POST /v1/lupin/login', () => {
     }
   });
 
+  it('rolls back the stored token when profile creation fails after a verified login', async () => {
+    fake = await startFakePkce();
+    const { OAUTH_PROVIDERS } = await import('../src/providers/oauth.js');
+    const real = OAUTH_PROVIDERS['openai'];
+    if (real === undefined) throw new Error('openai descriptor missing');
+    // A descriptor aimed at a default profile that does not exist makes
+    // ensureOAuthProfile fail AFTER the token was verified and stored: the
+    // token must not outlive the failed profile creation (Task 2 review).
+    fake.def.defaultProfileId = 'no-such-default-profile';
+    OAUTH_PROVIDERS['openai'] = fake.def;
+    try {
+      const app = appWithControl({ verifyToken: async () => ({ ok: true, detail: 'verified' }) });
+      const result = await completePkceLogin(app);
+      expect(result).toEqual({ startStatus: 200, jobStatus: 'error' });
+      expect(getOAuthTokens('openai')).toBeUndefined();
+      expect(loadConfig().profiles['openai-sub']).toBeUndefined();
+    } finally {
+      OAUTH_PROVIDERS['openai'] = real;
+    }
+  });
+
   it('starts OAuth login with the provider id advertised by the catalogue', async () => {
     fake = await startFakePkce();
     const { OAUTH_PROVIDERS } = await import('../src/providers/oauth.js');

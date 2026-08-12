@@ -316,7 +316,17 @@ async function runLoginJob(
     const verdict = await (deps.verifyToken ?? verifyToken)(def, tokens);
     if (!verdict.ok) throw new Error(verdict.detail);
     setOAuthTokens(def.id, tokens);
-    ensureOAuthProfile(def, undefined, verdict.models, bootstrapIdentity);
+    // The CLI login prints profile-creation failures to the terminal; this job
+    // has no terminal, so a token whose profile could not be created would
+    // silently outlive the failure. Roll it back: the login is a clean no-op.
+    try {
+      if (!ensureOAuthProfile(def, undefined, verdict.models, bootstrapIdentity)) {
+        throw new Error('could not create an OAuth profile');
+      }
+    } catch (e) {
+      deleteOAuthTokens(def.id);
+      throw e;
+    }
     job.status = 'done';
   } catch (e) {
     job.status = 'error';

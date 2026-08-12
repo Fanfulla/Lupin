@@ -363,7 +363,7 @@ export function ensureOAuthProfile(
   account?: string,
   discoveredModels?: string[],
   bootstrapIdentity?: BootstrapIdentity,
-): void {
+): boolean {
   // The profile name is derived, not hardcoded: kimi-sub, openai-sub, gemini-sub.
   // A second account gets its own profile, `kimi-sub@work`, because a profile
   // is exactly "one credential plus its slots" (§4nonies): chaining them with
@@ -388,7 +388,7 @@ export function ensureOAuthProfile(
       : DEFAULT_PROFILES.find((p) => p.provider === def.id);
   if (defaults === undefined) {
     console.error(`no hosted default profile for provider "${def.id}": add it to providers/defaults.ts`);
-    return;
+    return false;
   }
   // A profile with no slots in the defaults is one whose model names may not be
   // written there (rule 5): they come from the account itself, discovered at
@@ -397,7 +397,7 @@ export function ensureOAuthProfile(
   const slots = defaults.slots ?? slotsFromDiscovery(discoveredModels);
   if (slots === undefined) {
     console.error(`no models could be read from the account, so profile "${profileName}" was not created`);
-    return;
+    return false;
   }
   const existing = config.profiles[profileName];
   if (existing === undefined) {
@@ -436,6 +436,7 @@ export function ensureOAuthProfile(
   }
   console.log(`\nNext step:  lupin use ${profileName}   then   lupin run -- claude`);
   console.log('Optional: a statusline with the routing truth, see examples/ and README §Statusline.');
+  return true;
 }
 
 function cryptoToken(): string {
