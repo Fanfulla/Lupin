@@ -31,6 +31,7 @@ function runtime(overrides: Partial<HubDeps> = {}): HubDeps {
     loadConfig,
     tuiAvailable: async () => true,
     startBootstrap: async () => 'started',
+    startDaemon: async () => 'started',
     spawnTui: async () => 0,
     statusCommand: async () => 0,
     randomToken: () => 'bootstrap-token',
@@ -50,6 +51,26 @@ afterEach(() => {
   if (previousDir === undefined) delete process.env.LUPIN_DIR;
   else process.env.LUPIN_DIR = previousDir;
   rmSync(dir, { recursive: true, force: true });
+});
+
+describe('hub with a config', () => {
+  it('ensures the daemon is up before spawning the TUI, and never the bootstrap one', async () => {
+    saveConfig(configured());
+    const startDaemon = vi.fn<HubDeps['startDaemon']>(async () => 'started');
+    const startBootstrap = vi.fn<HubDeps['startBootstrap']>(async () => 'started');
+    const spawnTui = vi.fn<HubDeps['spawnTui']>(async () => 0);
+
+    const result = await hubCommandWith(runtime({ startDaemon, startBootstrap, spawnTui }));
+
+    expect(result).toBe(0);
+    expect(startDaemon).toHaveBeenCalledWith(4567);
+    expect(startBootstrap).not.toHaveBeenCalled();
+    const daemonOrder = startDaemon.mock.invocationCallOrder[0];
+    const tuiOrder = spawnTui.mock.invocationCallOrder[0];
+    expect(daemonOrder).toBeDefined();
+    expect(tuiOrder).toBeDefined();
+    expect(daemonOrder).toBeLessThan(tuiOrder ?? 0);
+  });
 });
 
 describe('hub cold start', () => {

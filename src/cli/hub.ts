@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { defaultConfigPath, loadConfig } from '../config/config.js';
-import { ensureBootstrapDaemon } from '../server/daemon.js';
+import { ensureBootstrapDaemon, ensureDaemon } from '../server/daemon.js';
 import type { BootstrapIdentity } from './login.js';
 import { statusCommand } from './daemonctl.js';
 
@@ -45,9 +45,11 @@ async function spawnTui(env: NodeJS.ProcessEnv): Promise<number> {
 export interface HubDeps {
   isTTY: boolean;
   configExists: () => boolean;
-  loadConfig: () => unknown;
+  loadConfig: () => { port: number };
   tuiAvailable: () => Promise<boolean>;
   startBootstrap: (identity: BootstrapIdentity) => Promise<'already-running' | 'started'>;
+  /** The configured counterpart of startBootstrap: the daemon `lupin run` ensures. */
+  startDaemon: (port: number) => Promise<'already-running' | 'started'>;
   spawnTui: (env: NodeJS.ProcessEnv) => Promise<number>;
   statusCommand: () => Promise<number>;
   randomToken: () => string;
@@ -59,9 +61,10 @@ const NO_CONFIG = 'no config yet: add a provider from the TUI (lupin, sidecar in
 
 export async function hubCommandWith(deps: HubDeps): Promise<number> {
   let configured = deps.configExists();
+  let config: { port: number } | undefined;
   if (configured) {
     try {
-      deps.loadConfig();
+      config = deps.loadConfig();
     } catch {
       deps.error(NO_CONFIG);
       return 1;
@@ -72,7 +75,7 @@ export async function hubCommandWith(deps: HubDeps): Promise<number> {
     const available = await deps.tuiAvailable();
     if (!configured && deps.configExists()) {
       try {
-        deps.loadConfig();
+        config = deps.loadConfig();
         configured = true;
       } catch {
         deps.error(NO_CONFIG);
@@ -80,7 +83,14 @@ export async function hubCommandWith(deps: HubDeps): Promise<number> {
       }
     }
     if (available) {
-      if (configured) return await deps.spawnTui(deps.env);
+      if (configured) {
+        // The cold start opens the TUI on a live bootstrap daemon; a
+        // configured start gets the same courtesy. A dashboard that opens on
+        // "daemon DOWN" lets every gesture fail at its last step instead
+        // (found driving the hub live, 2026-08-12).
+        if (config !== undefined) await deps.startDaemon(config.port);
+        return await deps.spawnTui(deps.env);
+      }
       const identity: BootstrapIdentity = { port: 3456, localToken: deps.randomToken() };
       await deps.startBootstrap(identity);
       return await deps.spawnTui({
@@ -112,6 +122,7 @@ export async function hubCommand(): Promise<number> {
     loadConfig,
     tuiAvailable,
     startBootstrap: ensureBootstrapDaemon,
+    startDaemon: ensureDaemon,
     spawnTui,
     statusCommand,
     randomToken: () => randomBytes(24).toString('hex'),
