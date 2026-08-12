@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- **A machine with npm only (no Rust sidecar, or no TTY) had no first run in
+  0.3.0**: the wizard was removed, the guided screen needs the sidecar, and
+  `lupin run` refuses without a config. Bare `lupin` now starts the setup
+  daemon in that situation and prints the authenticated `curl` calls ready to
+  paste; the first verified provider persists the config exactly as the TUI
+  path does.
+
 ## [0.3.0] - 2026-08-12
 
 Setup moved into the TUI, whole. This is the breaking release that removes the

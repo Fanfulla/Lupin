@@ -37,6 +37,7 @@ function runtime(overrides: Partial<HubDeps> = {}): HubDeps {
     randomToken: () => 'bootstrap-token',
     env: { PATH: 'test-path' },
     error: () => undefined,
+    print: () => undefined,
     ...overrides,
   };
 }
@@ -106,28 +107,52 @@ describe('hub cold start', () => {
     expect(spawnTui).toHaveBeenCalledWith({ PATH: 'test-path' });
   });
 
-  it('does not probe the sidecar or start a daemon without a TTY', async () => {
+  it('without a TTY it skips the sidecar probe and opens the headless setup path', async () => {
     const tuiAvailable = vi.fn<HubDeps['tuiAvailable']>(async () => true);
     const startBootstrap = vi.fn<HubDeps['startBootstrap']>(async () => 'started');
-    const error = vi.fn<HubDeps['error']>();
+    const printed: string[] = [];
 
-    const result = await hubCommandWith(runtime({ isTTY: false, tuiAvailable, startBootstrap, error }));
+    const result = await hubCommandWith(
+      runtime({ isTTY: false, tuiAvailable, startBootstrap, print: (l) => printed.push(l) }),
+    );
 
-    expect(result).toBe(1);
+    expect(result).toBe(0);
     expect(tuiAvailable).not.toHaveBeenCalled();
-    expect(startBootstrap).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith('no config yet: add a provider from the TUI (lupin, sidecar installed) or the control API (README §Headless setup)');
+    expect(startBootstrap).toHaveBeenCalledWith({ port: 3456, localToken: 'bootstrap-token' });
+    const text = printed.join('\n');
+    expect(text).toContain('/v1/lupin/setup-key');
+    expect(text).toContain('Bearer bootstrap-token');
+    expect(existsSync(defaultConfigPath())).toBe(false);
   });
 
-  it('keeps the setup guidance and does not start a daemon when the sidecar is absent', async () => {
+  it('without the sidecar it starts the bootstrap daemon and hands over the authenticated calls', async () => {
     const startBootstrap = vi.fn<HubDeps['startBootstrap']>(async () => 'started');
+    const printed: string[] = [];
+
+    const result = await hubCommandWith(
+      runtime({ tuiAvailable: async () => false, startBootstrap, print: (l) => printed.push(l) }),
+    );
+
+    expect(result).toBe(0);
+    expect(startBootstrap).toHaveBeenCalledWith({ port: 3456, localToken: 'bootstrap-token' });
+    expect(printed.join('\n')).toContain('/v1/lupin/providers');
+  });
+
+  it('a bootstrap that cannot start surfaces its own message instead of a stack', async () => {
     const error = vi.fn<HubDeps['error']>();
-
-    const result = await hubCommandWith(runtime({ tuiAvailable: async () => false, startBootstrap, error }));
-
+    const result = await hubCommandWith(
+      runtime({
+        tuiAvailable: async () => false,
+        startBootstrap: async () => {
+          throw new Error('different daemon is already running on port 3456; stop it or use its existing config');
+        },
+        error,
+      }),
+    );
     expect(result).toBe(1);
-    expect(startBootstrap).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith('no config yet: add a provider from the TUI (lupin, sidecar installed) or the control API (README §Headless setup)');
+    expect(error).toHaveBeenCalledWith(
+      'different daemon is already running on port 3456; stop it or use its existing config',
+    );
   });
 });
 

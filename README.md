@@ -53,27 +53,28 @@ Your whole setup lives in Claude Code, not in the model: MCP servers, skills, `C
 Lupin supports Windows, macOS and Linux. The proxy binds only to
 `127.0.0.1`. Prompts and responses are never persisted.
 
-### Fastest path: CLI
-
-Start with the interactive wizard. It asks for a provider, keeps the key
-hidden, tests a real request, and saves only after verification succeeds.
-
-```bash
-npx lupin-code@latest init
-npx lupin-code@latest run -- claude
-```
-
-That second command starts Claude Code with its API traffic pointed at Lupin.
-Your existing MCP servers, skills, hooks, plugins and project instructions stay
-where they already are.
-
-If you keep it, install it once and drop the `npx`. Every later example uses
-the short command:
+### Fastest path
 
 ```bash
 npm install -g lupin-code
-lupin --version
+lupin                    # opens the hub; with no config, it opens setup
 ```
+
+With the Rust sidecar on the PATH (next section) that second command is the
+guided add-provider screen: masked key input, a real 1-token verification,
+OAuth with browser polling, local runtimes with live model discovery. Without
+the sidecar, bare `lupin` starts the setup daemon and prints the authenticated
+`curl` calls that list the providers and verify your key: the first verified
+provider persists the config. Either way, nothing is saved before a
+verification succeeds, and then:
+
+```bash
+lupin run -- claude
+```
+
+That command starts Claude Code with its API traffic pointed at Lupin. Your
+existing MCP servers, skills, hooks, plugins and project instructions stay
+where they already are.
 
 ### TUI-first setup
 
@@ -267,7 +268,7 @@ Four lanes, picked by Lupin, never by you. **Passthrough first**: when a provide
 | Ollama, LM Studio, ds4-server | passthrough | **none** | local, native Anthropic endpoint |
 | llama.cpp server | translate | **none** | local |
 
-**344 models on OpenRouter, and Claude Code can natively use zero of them**, because OpenRouter's Anthropic-compatible endpoint only accepts Anthropic models. Through Lupin the **255 with tool calling** become usable. The other 74 connect and stay a chat, which the wizard says out loud instead of letting you find out mid-task.
+**344 models on OpenRouter, and Claude Code can natively use zero of them**, because OpenRouter's Anthropic-compatible endpoint only accepts Anthropic models. Through Lupin the **255 with tool calling** become usable. The other 74 connect and stay a chat, which Lupin says out loud instead of letting you find out mid-task.
 
 <details>
 <summary><b>How the routing works</b></summary>
@@ -330,9 +331,11 @@ itself ships (it needs the Rust toolchain; without one it prints the manual
 command instead).
 
 Keys: `1`-`9` switch profile, arrows and `Enter` do the same on the highlighted
-row, **`d` runs the doctor on the highlighted profile**, **`:` opens the command
-palette**, `o` edits the failover order, **`a` opens agents mode**, `r`
-refreshes now, `q` quits.
+row, **`d` runs the doctor on the highlighted profile**, **`m` aims its slots**
+(opus, sonnet and haiku edited in place, written as given and never checked:
+the profiles whose models only the account knows finally have a screen), **`:`
+opens the command palette**, `o` edits the failover order, **`a` opens agents
+mode**, `r` refreshes now, `q` quits.
 
 Agents mode is the subagent mixer on screen: it lists every agent route plus
 the conventional `subagents` row (shown even before it exists, so the first
@@ -359,9 +362,18 @@ request remains visible as `agent:<name>` in `lupin top` and the log.
 
 The doctor takes minutes, so it runs as a child process and its output streams
 into a panel while the dashboard keeps refreshing underneath. Provider setup is
-native to the TUI: the add-provider screen handles hosted API keys and OAuth,
-including browser polling and risk confirmation, without spawning `init` or
-`login`. The palette runs `doctor`, `usage`, `list`, `status` and `stop`. Its only
+native to the TUI, whole (0.3.0, ADR-51): API-key rows verify before storing,
+offer the economy preset where one exists, and turn a provider rejection into
+an explicit save-anyway choice; OAuth rows poll the browser flow, confirm
+suspension risks first, offer the official-CLI credential import when one is
+found, and take an optional account label so a second account gets its own
+profile; local rows (Ollama, LM Studio, llama.cpp, ds4) probe the live server
+and list every chat model with its real window, tool support and a
+context-too-small verdict before you pick the main and light models. Rows that
+already have a profile say `configured`, and the failover offer arrives only
+after a setup succeeded, never before the provider answered. Opening the hub
+also makes sure the daemon is running, so the dashboard never starts dead. The
+palette runs `doctor`, `usage`, `list`, `status` and `stop`. Its only
 shell-only row is `run`, because Claude Code needs to own the terminal.
 
 Give it 32 rows or more and it draws the portrait full size; below that it keeps

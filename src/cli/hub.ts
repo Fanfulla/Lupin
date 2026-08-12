@@ -55,6 +55,7 @@ export interface HubDeps {
   randomToken: () => string;
   env: NodeJS.ProcessEnv;
   error: (message: string) => void;
+  print: (line: string) => void;
 }
 
 const NO_CONFIG = 'no config yet: add a provider from the TUI (lupin, sidecar installed) or the control API (README §Headless setup)';
@@ -102,8 +103,28 @@ export async function hubCommandWith(deps: HubDeps): Promise<number> {
   }
 
   if (!configured) {
-    deps.error(NO_CONFIG);
-    return 1;
+    // ADR-51 removed the CLI wizard and the guided screen needs the sidecar.
+    // A machine with neither still deserves a first run: start the same
+    // bootstrap daemon the TUI would get and hand over the authenticated
+    // calls, so README §Headless setup works from zero. Nothing is persisted
+    // until a provider verifies; the token only guards this loopback daemon.
+    const identity: BootstrapIdentity = { port: 3456, localToken: deps.randomToken() };
+    try {
+      await deps.startBootstrap(identity);
+    } catch (e) {
+      deps.error(e instanceof Error ? e.message : String(e));
+      return 1;
+    }
+    deps.print('no config yet: the setup daemon is up on 127.0.0.1:3456.');
+    deps.print('Add a provider through the control API (README §Headless setup):');
+    deps.print('');
+    deps.print(`  curl http://127.0.0.1:3456/v1/lupin/providers -H "authorization: Bearer ${identity.localToken}"`);
+    deps.print(`  curl -X POST http://127.0.0.1:3456/v1/lupin/setup-key -H "authorization: Bearer ${identity.localToken}" \\`);
+    deps.print(`    -H "content-type: application/json" -d '{"providerId":"<row id>","key":"<api key>"}'`);
+    deps.print('');
+    deps.print('The first verified provider persists the config; then: lupin run -- claude');
+    deps.print('For the guided screen instead, install the lupin-tui sidecar and rerun lupin.');
+    return 0;
   }
 
   // Fallback: status plus the next moves, never a bare usage dump.
@@ -128,5 +149,6 @@ export async function hubCommand(): Promise<number> {
     randomToken: () => randomBytes(24).toString('hex'),
     env: process.env,
     error: console.error,
+    print: console.log,
   });
 }
