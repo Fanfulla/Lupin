@@ -7,6 +7,54 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
+## [0.3.0] - 2026-08-12
+
+Setup moved into the TUI, whole. This is the breaking release that removes the
+CLI setup verbs (ADR-51): if you scripted `lupin init` or `lupin login`, read
+the Removed section and README §Headless setup.
+
+### Removed
+
+- **`lupin init`, `lupin login` and `lupin logout` are gone.** Setup lives in
+  the hub: bare `lupin` opens the TUI, which now covers everything the wizards
+  did. The removed verbs answer with where setup went instead of "unknown
+  command". Headless machines (SSH, CI, no sidecar) use the daemon's control
+  API directly; README §Headless setup documents the calls, curl included.
+- The post-init recommended-skills offer went with the wizard; the docs cover
+  the same ground.
+
+### Added
+
+- **Local runtimes are set up from the TUI.** Picking an Ollama, LM Studio,
+  llama.cpp or ds4 row runs the live discovery: every chat model with its real
+  window (a `max` marker when only the theoretical figure is known), tool
+  support, and a "context too small" verdict against the measured Claude Code
+  harness floor. Then the main and light picks, and the vision and
+  long-context routes strictly on request. A server that is down answers with
+  its own start command and a retry key.
+- **The economy preset, save-anyway, the official-CLI credential import and
+  OAuth account labels moved into the TUI** with the CLI's guarantees intact:
+  verification before storage, every choice explicit, nothing silent.
+- **Aim a profile's slots from the dashboard** with `m`: opus, sonnet and
+  haiku edited in sequence, the last enter applies only what changed, and the
+  names are written as given and never checked (the `use --opus` rule). Made
+  for the profiles whose models only the account knows (Copilot).
+- Catalogue rows that already have a profile say `configured`, and the
+  failover question is asked after a setup succeeded, never before the
+  provider has answered.
+
+### Fixed
+
+- **A start right after a stop could fail to come up at all**: the daemon
+  child died on its first `EADDRINUSE` while the watchdog still held the port,
+  so the hold was never yielded. The child now retries the bind inside a
+  bounded window.
+- **Bare `lupin` with a config but no running daemon opened a dead
+  dashboard** where every gesture failed at its last step. The hub now ensures
+  the daemon before opening the TUI, exactly as the cold start always did.
+- **A control-plane OAuth login whose profile could not be created silently
+  kept the token.** It is rolled back and the login job reports the error.
+
 ## [0.2.5] - 2026-08-10
 
 ### Fixed
