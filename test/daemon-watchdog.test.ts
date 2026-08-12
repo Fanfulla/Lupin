@@ -591,3 +591,64 @@ describe('bootstrap daemon entry contract', () => {
     }
   });
 });
+
+// Found live 2026-08-12 (WSL, stop then start inside the watchdog hold): the
+// child reached its bind BEFORE the watchdog's 300ms poll saw the pidfile,
+// died on EADDRINUSE, and the yield never happened. The child now retries
+// inside a bounded window, so briefly-held ports resolve instead of racing.
+describe('daemon bind retry during a watchdog yield', () => {
+  it('comes up when the port is released shortly after the child started', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'lupin-bind-retry-'));
+    const app = new Hono();
+    app.all('*', (c) => c.text('held', 503));
+    let bound: ServerType | undefined;
+    const port = await new Promise<number>((resolve) => {
+      bound = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, (info) => resolve(info.port));
+    });
+    const holder = bound;
+    if (holder === undefined) throw new Error('holder never bound');
+    const config: LupinConfig = {
+      activeProfile: 'a',
+      port,
+      localToken: 'bind-retry-token',
+      profiles: {
+        a: {
+          provider: 'moonshot',
+          mode: 'passthrough',
+          baseUrl: 'http://127.0.0.1:1',
+          auth: { type: 'bearer', apiKeyRef: 'X' },
+          slots: { opus: 'm', sonnet: 'm', haiku: 'm' },
+        },
+      },
+    };
+    writeFileSync(join(sandbox, 'config.json'), JSON.stringify(config));
+    const entry = fileURLToPath(new URL('../src/server/start.ts', import.meta.url));
+    const child = spawn(process.execPath, ['--import', 'tsx', entry], {
+      env: { ...process.env, LUPIN_DIR: sandbox },
+      stdio: 'ignore',
+    });
+    fixtureChildren.push(child);
+    try {
+      // Long enough that, without the retry, the child has already died on
+      // its first EADDRINUSE; then the port frees, as a yield frees it.
+      await new Promise((r) => setTimeout(r, 700));
+      await new Promise<void>((resolve) => holder.close(() => resolve()));
+      let up = false;
+      const deadline = Date.now() + 8000;
+      while (!up && Date.now() < deadline) {
+        try {
+          const res = await fetch(`http://127.0.0.1:${String(port)}/health`, {
+            signal: AbortSignal.timeout(500),
+          });
+          up = res.status === 200;
+        } catch {
+          // not up yet
+        }
+        if (!up) await new Promise((r) => setTimeout(r, 200));
+      }
+      expect(up).toBe(true);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  }, 15000);
+});
