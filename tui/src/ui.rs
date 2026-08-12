@@ -7,10 +7,10 @@
 // `lupin use` performs, so the two surfaces can never disagree for longer
 // than one refresh.
 
-use crate::api::{AuthKind, Snapshot};
+use crate::api::{self, AuthKind, Snapshot};
 use crate::config::slot_label;
 use crate::job::{Job, PALETTE};
-use crate::AddProviderMode;
+use crate::{AddProviderMode, ModelPickTarget};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -247,8 +247,19 @@ fn render_add_provider(f: &mut Frame, mode: &AddProviderMode, area: Rect) {
                     let auth = match provider.auth_kind {
                         AuthKind::Oauth => "(OAuth)",
                         AuthKind::Key => "(API key)",
+                        AuthKind::Local => "(local)",
                     };
-                    let text = format!(" {}  {auth}", provider.description);
+                    let economy = provider
+                        .economy
+                        .as_ref()
+                        .map(|_| "  economy available")
+                        .unwrap_or_default();
+                    let import = if provider.import_available {
+                        "  import available"
+                    } else {
+                        ""
+                    };
+                    let text = format!(" {}  {auth}{economy}{import}", provider.description);
                     if index == *cursor {
                         Line::from(Span::styled(
                             text,
@@ -263,16 +274,42 @@ fn render_add_provider(f: &mut Frame, mode: &AddProviderMode, area: Rect) {
                 lines.push(Line::from(" no providers available"));
             }
             lines.push(Line::from(Span::styled(
-                " arrows/j/k select   enter continue   esc exit",
+                " arrows/j/k select   enter continue   x logout (oauth)   esc exit",
                 dim(),
             )));
             lines
         }
+        AddProviderMode::OAuthImportConfirm { provider, .. } => vec![
+            Line::from(Span::styled(&provider.description, bold())),
+            Line::from(" Import credentials from the official CLI?"),
+            Line::from(""),
+            Line::from(Span::styled(" enter/y import   n skip   esc cancel", dim())),
+        ],
+        AddProviderMode::OAuthAccount { provider, value, .. } => vec![
+            Line::from(Span::styled(&provider.description, bold())),
+            Line::from(format!(" Account label (optional): {value}")),
+            Line::from(Span::styled(
+                " letters, digits, dot, dash or underscore, max 32",
+                dim(),
+            )),
+            Line::from(Span::styled(
+                " type label   backspace edit   enter continue   esc cancel",
+                dim(),
+            )),
+        ],
         AddProviderMode::ConfirmRisk { provider, .. } => vec![
             Line::from(Span::styled(&provider.description, bold())),
             Line::from(provider.suspension_warning.as_deref().unwrap_or_default()),
             Line::from(""),
             Line::from(Span::styled(" enter confirm   esc cancel", dim())),
+        ],
+        AddProviderMode::LogoutAccount { provider, value, .. } => vec![
+            Line::from(Span::styled(&provider.description, bold())),
+            Line::from(format!(" Account label (optional, enter = default): {value}")),
+            Line::from(Span::styled(
+                " type label   backspace edit   enter log out   esc cancel",
+                dim(),
+            )),
         ],
         AddProviderMode::KeyInput {
             provider, value, ..
@@ -290,6 +327,137 @@ fn render_add_provider(f: &mut Frame, mode: &AddProviderMode, area: Rect) {
                     dim(),
                 )),
             ]
+        }
+        AddProviderMode::EconomyChoice {
+            provider, economy, ..
+        } => {
+            let desc = provider.economy.as_deref().unwrap_or_default();
+            let mark = |chosen: bool| if chosen { "*" } else { " " };
+            vec![
+                Line::from(Span::styled("Spending profile:", bold())),
+                Line::from(format!(
+                    " {}1. standard   everything on the top model",
+                    mark(!economy)
+                )),
+                Line::from(format!(" {}2. economy    {desc}", mark(*economy))),
+                Line::from(Span::styled(
+                    " 1/2 choose   enter confirm (default standard)   esc cancel",
+                    dim(),
+                )),
+            ]
+        }
+        AddProviderMode::SaveAnywayConfirm { message, .. } => vec![
+            Line::from(Span::styled(message, Style::default().fg(Color::Red))),
+            Line::from(""),
+            Line::from(Span::styled(
+                " save the key and the profile anyway? y yes   enter/n no (default no)",
+                dim(),
+            )),
+        ],
+        AddProviderMode::LocalDiscoverLoading { provider, .. } => vec![
+            Line::from(Span::styled(&provider.description, bold())),
+            Line::from(" discovering local models..."),
+        ],
+        AddProviderMode::LocalDiscoverError {
+            message,
+            start_hint,
+            ..
+        } => {
+            let mut lines = vec![Line::from(Span::styled(
+                message,
+                Style::default().fg(Color::Red),
+            ))];
+            if let Some(hint) = start_hint {
+                lines.push(Line::from(""));
+                lines.push(Line::from(format!(" start it with:  {hint}")));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                " enter retry   esc returns to providers",
+                dim(),
+            )));
+            lines
+        }
+        AddProviderMode::ModelPick {
+            models,
+            model_cursor,
+            target,
+            ..
+        } => {
+            let title = match target {
+                ModelPickTarget::Main => "Main model (opus and sonnet slots):",
+                ModelPickTarget::Light => "Light model (haiku slot), enter with no move = same as main:",
+            };
+            let mut lines = vec![Line::from(Span::styled(title, bold()))];
+            if models.is_empty() {
+                lines.push(Line::from(" no models available"));
+            }
+            for (i, m) in models.iter().enumerate() {
+                let text = format!(" {}{}", m.id, model_row_suffix(m));
+                if i == *model_cursor {
+                    lines.push(Line::from(Span::styled(
+                        text,
+                        Style::default().add_modifier(Modifier::REVERSED),
+                    )));
+                } else {
+                    lines.push(Line::from(text));
+                }
+            }
+            lines.push(Line::from(Span::styled(
+                " arrows/j/k select   enter pick   esc cancel",
+                dim(),
+            )));
+            lines
+        }
+        AddProviderMode::VisionPick {
+            main,
+            candidates,
+            pick_cursor,
+            ..
+        } => {
+            let mut lines = vec![
+                Line::from(Span::styled("Vision route (optional):", bold())),
+                Line::from(format!(
+                    " send requests carrying images to a model that declares it can read them, instead of \"{main}\""
+                )),
+            ];
+            lines.extend(pick_list_lines(
+                "no vision route",
+                candidates,
+                *pick_cursor,
+            ));
+            lines.push(Line::from(Span::styled(
+                " arrows/j/k select   enter pick (default: no route)   esc cancel",
+                dim(),
+            )));
+            lines
+        }
+        AddProviderMode::LongContextConfirm { main, light, .. } => vec![
+            Line::from(Span::styled("Long-context route (optional):", bold())),
+            Line::from(format!(
+                " when a request approaches the real window of \"{light}\", send it to \"{main}\" instead"
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                " enable it? y yes   enter/n no (default no)",
+                dim(),
+            )),
+        ],
+        AddProviderMode::FailoverOffer {
+            candidates,
+            pick_cursor,
+            ..
+        } => {
+            let mut lines = vec![Line::from(Span::styled(
+                "Failover (optional): retry once through another profile on a rate limit or overload",
+                bold(),
+            ))];
+            lines.extend(pick_list_lines("no failover", candidates, *pick_cursor));
+            lines.push(Line::from(Span::styled(
+                " arrows/j/k select   enter pick (default: none)   esc cancel",
+                dim(),
+            )));
+            lines
         }
         AddProviderMode::OAuthWaiting { provider, url, .. } => {
             let mut lines = vec![
@@ -325,6 +493,53 @@ fn render_add_provider(f: &mut Frame, mode: &AddProviderMode, area: Rect) {
         ],
     };
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+/// A local model's row suffix: the context window in k (a `max` suffix when
+/// the window is the model's advertised maximum rather than what is actually
+/// loaded), a "no tools" warning when the runtime says so, and a "context too
+/// small" warning below the doctor's floor. Same wording as `lupin init`
+/// (src/cli/init.ts), so the two surfaces never disagree.
+fn model_row_suffix(m: &api::LocalModel) -> String {
+    let mut s = String::new();
+    if let Some(w) = m.context_window {
+        let k = w / 1024;
+        let suffix = if m.context_window_source.as_deref() == Some("max") {
+            " max"
+        } else {
+            ""
+        };
+        s.push_str(&format!("  ctx {k}k{suffix}"));
+    }
+    if m.supports_tools == Some(false) {
+        s.push_str("  ⚠ no tools");
+    }
+    if m.context_too_small {
+        s.push_str("  ⚠ context too small");
+    }
+    s
+}
+
+/// A pick list with a synthetic leading "none" row (index 0): the shared
+/// rendering for every optional pick (vision, failover), where pressing enter
+/// with the cursor left at 0 is the skip gesture.
+fn pick_list_lines(none_label: &str, candidates: &[String], cursor: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::with_capacity(candidates.len() + 1);
+    let row = |i: usize, text: String| {
+        if i == cursor {
+            Line::from(Span::styled(
+                text,
+                Style::default().add_modifier(Modifier::REVERSED),
+            ))
+        } else {
+            Line::from(text)
+        }
+    };
+    lines.push(row(0, format!(" ({none_label})")));
+    for (i, name) in candidates.iter().enumerate() {
+        lines.push(row(i + 1, format!(" {name}")));
+    }
+    lines
 }
 
 /// The agents-mode overlay: one row per route, target by name (the same
@@ -803,11 +1018,17 @@ fn render_message(f: &mut Frame, message: &str, area: Rect) {
 }
 
 fn render_keys(f: &mut Frame, area: Rect, add_provider: Option<&AddProviderMode>) {
-    let text = if add_provider.is_some_and(|mode| matches!(mode, AddProviderMode::KeyInput { .. }))
-    {
-        "  key input active   q types normally   ctrl-c quit"
+    let text = if add_provider.is_some_and(|mode| {
+        matches!(
+            mode,
+            AddProviderMode::KeyInput { .. }
+                | AddProviderMode::OAuthAccount { .. }
+                | AddProviderMode::LogoutAccount { .. }
+        )
+    }) {
+        "  text input active   q types normally   ctrl-c quit"
     } else {
-        "  q quit   1-9/arrows+enter switch   d doctor   : commands   o order   a agents   r refresh"
+        "  q quit   1-9/arrows+enter switch   d doctor   : commands   o order   a agents   p add provider   r refresh"
     };
     f.render_widget(Paragraph::new(Line::from(Span::styled(text, dim()))), area);
 }
@@ -851,6 +1072,9 @@ mod tests {
             description: description.to_string(),
             auth_kind,
             suspension_warning: None,
+            economy: None,
+            start_hint: None,
+            import_available: false,
         }
     }
 
@@ -902,6 +1126,8 @@ mod tests {
             provider: row,
             providers: Vec::new(),
             cursor: 0,
+            account: None,
+            import_if_available: false,
         });
         assert!(
             out.contains("Using OAuth may suspend this account"),

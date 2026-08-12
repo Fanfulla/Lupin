@@ -33,16 +33,26 @@ pub(crate) enum AddProviderMode {
         providers: Vec<api::ProviderRow>,
         cursor: usize,
     },
-    ConfirmRisk {
+    // OAuth: import-available rows ask first, every OAuth row then offers an
+    // account label, and a suspension warning still gates the login itself.
+    OAuthImportConfirm {
         provider: api::ProviderRow,
         providers: Vec<api::ProviderRow>,
         cursor: usize,
     },
-    KeyInput {
+    OAuthAccount {
         provider: api::ProviderRow,
         providers: Vec<api::ProviderRow>,
         cursor: usize,
+        import_if_available: bool,
         value: String,
+    },
+    ConfirmRisk {
+        provider: api::ProviderRow,
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+        account: Option<String>,
+        import_if_available: bool,
     },
     OAuthWaiting {
         provider: api::ProviderRow,
@@ -51,12 +61,122 @@ pub(crate) enum AddProviderMode {
         job: String,
         url: Option<String>,
     },
+    // OAuth logout (reached from a row with `x`, the same catalogue the login
+    // gesture already lives on): an optional account label, same field as login.
+    LogoutAccount {
+        provider: api::ProviderRow,
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+        value: String,
+    },
+    // Key rows: the masked field, then the economy offer (only when the row
+    // carries one), then the shared failover offer, then submit.
+    KeyInput {
+        provider: api::ProviderRow,
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+        value: String,
+    },
+    EconomyChoice {
+        provider: api::ProviderRow,
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+        key: String,
+        economy: bool,
+    },
+    // A failed connectivity test on a key row offers this escape hatch:
+    // nothing is stored unless the user explicitly says so again.
+    SaveAnywayConfirm {
+        provider: api::ProviderRow,
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+        key: String,
+        economy: bool,
+        failover: Option<String>,
+        message: String,
+    },
+    // Local rows: live discovery, then main/light model picks, then the two
+    // opt-in offers (vision, long context), then the shared failover offer.
+    LocalDiscoverLoading {
+        provider: api::ProviderRow,
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+    },
+    LocalDiscoverError {
+        provider: api::ProviderRow,
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+        message: String,
+        start_hint: Option<String>,
+    },
+    ModelPick {
+        provider: api::ProviderRow,
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+        models: Vec<api::LocalModel>,
+        model_cursor: usize,
+        target: ModelPickTarget,
+        /// Set once the main model is picked, so the light picker's cursor
+        /// can start there: pressing enter without moving reproduces "same
+        /// as main" with no separate skip gesture.
+        main: Option<String>,
+    },
+    VisionPick {
+        provider: api::ProviderRow,
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+        models: Vec<api::LocalModel>,
+        main: String,
+        light: String,
+        /// Candidate model ids (supportsVision, differ from main). Row 0 of
+        /// the rendered list is always the synthetic "no route" choice.
+        candidates: Vec<String>,
+        pick_cursor: usize,
+    },
+    LongContextConfirm {
+        provider: api::ProviderRow,
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+        main: String,
+        light: String,
+        vision: Option<String>,
+    },
+    // Shared by the key and local flows: offered only when another profile
+    // already exists, default none (row 0 of the rendered list).
+    FailoverOffer {
+        pending: PendingSubmit,
+        providers: Vec<api::ProviderRow>,
+        cursor: usize,
+        candidates: Vec<String>,
+        pick_cursor: usize,
+    },
     Success(String),
     Error {
         message: String,
         providers: Vec<api::ProviderRow>,
         cursor: usize,
         return_to_list: bool,
+    },
+}
+
+pub(crate) enum ModelPickTarget {
+    Main,
+    Light,
+}
+
+/// What the shared failover offer resumes into once a choice is made.
+pub(crate) enum PendingSubmit {
+    Key {
+        provider: api::ProviderRow,
+        key: String,
+        economy: bool,
+    },
+    Local {
+        provider: api::ProviderRow,
+        main: String,
+        light: String,
+        vision: Option<String>,
+        long_context: bool,
     },
 }
 
@@ -172,6 +292,24 @@ fn run(
         })?;
         if matches!(add_provider, Some(AddProviderMode::Loading)) {
             add_provider = Some(load_providers(&snap, bootstrap_identity));
+            continue;
+        }
+        if let Some(AddProviderMode::LocalDiscoverLoading { .. }) = &add_provider {
+            let Some(AddProviderMode::LocalDiscoverLoading {
+                provider,
+                providers,
+                cursor,
+            }) = add_provider.take()
+            else {
+                unreachable!("matched above");
+            };
+            add_provider = Some(load_local_models(
+                provider,
+                providers,
+                cursor,
+                &snap,
+                bootstrap_identity,
+            ));
             continue;
         }
 
@@ -371,6 +509,9 @@ fn run(
                         last = Instant::now();
                         message = "refreshed".to_string();
                     }
+                    KeyCode::Char('p') => {
+                        add_provider = Some(AddProviderMode::Loading);
+                    }
                     KeyCode::Up | KeyCode::Char('k') => {
                         selected = selected.saturating_sub(1);
                     }
@@ -479,11 +620,14 @@ fn load_providers(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_provider_login(
     provider: api::ProviderRow,
     providers: Vec<api::ProviderRow>,
     cursor: usize,
     accept_risk: bool,
+    account: Option<String>,
+    import_if_available: bool,
     snap: &api::Snapshot,
     bootstrap_identity: Option<&config::BootstrapIdentity>,
 ) -> AddProviderMode {
@@ -495,7 +639,13 @@ fn start_provider_login(
             return_to_list: true,
         };
     };
-    match api::start_login(&identity, &provider.id, accept_risk) {
+    match api::start_login(
+        &identity,
+        &provider.id,
+        accept_risk,
+        account.as_deref(),
+        import_if_available,
+    ) {
         Ok(job) => AddProviderMode::OAuthWaiting {
             provider,
             providers,
@@ -524,18 +674,394 @@ fn redact_key_from_error(error: &str, key: &str) -> String {
     }
 }
 
-fn submit_provider_key(
-    provider_id: &str,
-    value: &mut String,
+/// Letters, digits, dot, dash or underscore: the same set the daemon accepts
+/// for an OAuth account label (`src/providers/oauth.ts`, `ACCOUNT_LABEL`).
+/// Filtering at the keystroke keeps the field always valid, so there is
+/// nothing to reject on submit.
+fn is_account_label_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_'
+}
+
+const ACCOUNT_LABEL_MAX: usize = 32;
+
+/// An empty field means "no label" (login/logout both treat it as optional).
+fn none_or(value: &str) -> Option<String> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+/// The vision-route candidates (mirrors `visionCandidates`, src/cli/init.ts):
+/// only models that declare vision support and are not already the main
+/// model, since routing to the model that would serve it anyway is a no-op.
+fn vision_candidates(models: &[api::LocalModel], main: &str) -> Vec<String> {
+    models
+        .iter()
+        .filter(|m| m.supports_vision == Some(true) && m.id != main)
+        .map(|m| m.id.clone())
+        .collect()
+}
+
+/// Whether the long-context offer is worth asking at all: a light model
+/// distinct from main, and a discovered window on at least one of the picks
+/// (mirrors the CLI's `windows.length > 0 && small !== big`, init.ts). The
+/// daemon re-validates with the exact rule when the route is actually written,
+/// so an occasional over-offer here just costs a rejected write, never a
+/// silently wrong one.
+fn long_context_eligible(models: &[api::LocalModel], main: &str, light: &str) -> bool {
+    if main == light {
+        return false;
+    }
+    let known = |id: &str| models.iter().any(|m| m.id == id && m.context_window.is_some());
+    known(main) || known(light)
+}
+
+/// Other profiles the new one could fail over to (mirrors `offerFailover`,
+/// src/cli/init.ts): every existing profile except one already carrying this
+/// provider's id.
+fn failover_candidates(snap: &api::Snapshot, new_id: &str) -> Vec<String> {
+    snap.profile_names
+        .iter()
+        .filter(|n| n.as_str() != new_id)
+        .cloned()
+        .collect()
+}
+
+/// What a successful setup does next: back to the dashboard directly once a
+/// profile exists, or the delayed-success screen while the cold-start
+/// bootstrap is still the only thing on screen (the same fork the original
+/// key-only flow used, now shared by every path that can succeed).
+fn finish_add_provider(
+    cfg_path: &std::path::Path,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+    message: &mut String,
+) -> AddProviderAction {
+    let refreshed = api::snapshot(cfg_path, bootstrap_identity);
+    *message = "provider added".to_string();
+    if needs_provider(&refreshed) {
+        AddProviderAction::Stay(AddProviderMode::Success("provider added".to_string()))
+    } else {
+        AddProviderAction::Dashboard(refreshed)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn submit_key(
+    provider: api::ProviderRow,
+    providers: Vec<api::ProviderRow>,
+    cursor: usize,
+    key: String,
+    economy: bool,
+    failover: Option<String>,
+    save_anyway: bool,
     snap: &api::Snapshot,
     bootstrap_identity: Option<&config::BootstrapIdentity>,
-) -> Result<(), String> {
-    let result = onboarding_identity(snap, bootstrap_identity)
-        .ok_or_else(|| "daemon not answering: restart with `lupin`".to_string())
-        .and_then(|identity| api::setup_key(&identity, provider_id, value))
-        .map_err(|error| redact_key_from_error(&error, value));
-    value.clear();
-    result
+    cfg_path: &std::path::Path,
+    message: &mut String,
+) -> AddProviderAction {
+    let Some(identity) = onboarding_identity(snap, bootstrap_identity) else {
+        return AddProviderAction::Stay(AddProviderMode::Error {
+            message: "daemon not answering: restart with `lupin`".to_string(),
+            providers,
+            cursor,
+            return_to_list: true,
+        });
+    };
+    let opts = api::SetupKeyOptions {
+        economy,
+        failover: failover.as_deref(),
+        save_anyway,
+    };
+    match api::setup_key(&identity, &provider.id, &key, &opts) {
+        Ok(()) => finish_add_provider(cfg_path, bootstrap_identity, message),
+        Err(e) if e.can_save_anyway && !save_anyway => {
+            let shown = redact_key_from_error(&onboarding_error(e.message), &key);
+            AddProviderAction::Stay(AddProviderMode::SaveAnywayConfirm {
+                provider,
+                providers,
+                cursor,
+                key,
+                economy,
+                failover,
+                message: shown,
+            })
+        }
+        Err(e) => {
+            let shown = redact_key_from_error(&onboarding_error(e.message), &key);
+            AddProviderAction::Stay(AddProviderMode::Error {
+                message: shown,
+                providers,
+                cursor,
+                return_to_list: true,
+            })
+        }
+    }
+}
+
+/// After the key and (when offered) the economy choice: the shared failover
+/// offer when another profile exists, otherwise straight to submission.
+#[allow(clippy::too_many_arguments)]
+fn after_key_details(
+    provider: api::ProviderRow,
+    providers: Vec<api::ProviderRow>,
+    cursor: usize,
+    key: String,
+    economy: bool,
+    snap: &api::Snapshot,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+    cfg_path: &std::path::Path,
+    message: &mut String,
+) -> AddProviderAction {
+    let candidates = failover_candidates(snap, &provider.id);
+    if candidates.is_empty() {
+        submit_key(
+            provider,
+            providers,
+            cursor,
+            key,
+            economy,
+            None,
+            false,
+            snap,
+            bootstrap_identity,
+            cfg_path,
+            message,
+        )
+    } else {
+        AddProviderAction::Stay(AddProviderMode::FailoverOffer {
+            pending: PendingSubmit::Key {
+                provider,
+                key,
+                economy,
+            },
+            providers,
+            cursor,
+            candidates,
+            pick_cursor: 0,
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn submit_local(
+    provider: api::ProviderRow,
+    providers: Vec<api::ProviderRow>,
+    cursor: usize,
+    main: String,
+    light: String,
+    vision: Option<String>,
+    long_context: bool,
+    failover: Option<String>,
+    snap: &api::Snapshot,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+    cfg_path: &std::path::Path,
+    message: &mut String,
+) -> AddProviderAction {
+    let Some(identity) = onboarding_identity(snap, bootstrap_identity) else {
+        return AddProviderAction::Stay(AddProviderMode::Error {
+            message: "daemon not answering: restart with `lupin`".to_string(),
+            providers,
+            cursor,
+            return_to_list: true,
+        });
+    };
+    let req = api::SetupLocalRequest {
+        provider_id: &provider.id,
+        main: &main,
+        light: &light,
+        vision: vision.as_deref(),
+        long_context,
+        failover: failover.as_deref(),
+    };
+    match api::setup_local(&identity, &req) {
+        Ok(()) => finish_add_provider(cfg_path, bootstrap_identity, message),
+        Err(e) => AddProviderAction::Stay(AddProviderMode::Error {
+            message: onboarding_error(e.message),
+            providers,
+            cursor,
+            return_to_list: true,
+        }),
+    }
+}
+
+/// After the two opt-in local offers (vision, long context): the shared
+/// failover offer when another profile exists, otherwise straight to
+/// submission. Same fork as `after_key_details`.
+#[allow(clippy::too_many_arguments)]
+fn after_local_details(
+    provider: api::ProviderRow,
+    providers: Vec<api::ProviderRow>,
+    cursor: usize,
+    main: String,
+    light: String,
+    vision: Option<String>,
+    long_context: bool,
+    snap: &api::Snapshot,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+    cfg_path: &std::path::Path,
+    message: &mut String,
+) -> AddProviderAction {
+    let candidates = failover_candidates(snap, &provider.id);
+    if candidates.is_empty() {
+        submit_local(
+            provider,
+            providers,
+            cursor,
+            main,
+            light,
+            vision,
+            long_context,
+            None,
+            snap,
+            bootstrap_identity,
+            cfg_path,
+            message,
+        )
+    } else {
+        AddProviderAction::Stay(AddProviderMode::FailoverOffer {
+            pending: PendingSubmit::Local {
+                provider,
+                main,
+                light,
+                vision,
+                long_context,
+            },
+            providers,
+            cursor,
+            candidates,
+            pick_cursor: 0,
+        })
+    }
+}
+
+/// After the light-model pick: the vision offer when the runtime lists a
+/// candidate, otherwise straight to the long-context question.
+#[allow(clippy::too_many_arguments)]
+fn after_light_pick(
+    provider: api::ProviderRow,
+    providers: Vec<api::ProviderRow>,
+    cursor: usize,
+    models: Vec<api::LocalModel>,
+    main: String,
+    light: String,
+    snap: &api::Snapshot,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+    cfg_path: &std::path::Path,
+    message: &mut String,
+) -> AddProviderAction {
+    let candidates = vision_candidates(&models, &main);
+    if candidates.is_empty() {
+        after_vision(
+            provider,
+            providers,
+            cursor,
+            models,
+            main,
+            light,
+            None,
+            snap,
+            bootstrap_identity,
+            cfg_path,
+            message,
+        )
+    } else {
+        AddProviderAction::Stay(AddProviderMode::VisionPick {
+            provider,
+            providers,
+            cursor,
+            models,
+            main,
+            light,
+            candidates,
+            pick_cursor: 0,
+        })
+    }
+}
+
+/// After the vision offer: the long-context question when a window is known
+/// and the picks differ, otherwise straight to the shared failover offer.
+#[allow(clippy::too_many_arguments)]
+fn after_vision(
+    provider: api::ProviderRow,
+    providers: Vec<api::ProviderRow>,
+    cursor: usize,
+    models: Vec<api::LocalModel>,
+    main: String,
+    light: String,
+    vision: Option<String>,
+    snap: &api::Snapshot,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+    cfg_path: &std::path::Path,
+    message: &mut String,
+) -> AddProviderAction {
+    if long_context_eligible(&models, &main, &light) {
+        AddProviderAction::Stay(AddProviderMode::LongContextConfirm {
+            provider,
+            providers,
+            cursor,
+            main,
+            light,
+            vision,
+        })
+    } else {
+        after_local_details(
+            provider,
+            providers,
+            cursor,
+            main,
+            light,
+            vision,
+            false,
+            snap,
+            bootstrap_identity,
+            cfg_path,
+            message,
+        )
+    }
+}
+
+fn load_local_models(
+    provider: api::ProviderRow,
+    providers: Vec<api::ProviderRow>,
+    cursor: usize,
+    snap: &api::Snapshot,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+) -> AddProviderMode {
+    let Some(identity) = onboarding_identity(snap, bootstrap_identity) else {
+        return AddProviderMode::Error {
+            message: "daemon not answering: restart with `lupin`".to_string(),
+            providers,
+            cursor,
+            return_to_list: true,
+        };
+    };
+    match api::discover_local(&identity, &provider.id) {
+        Ok(models) if models.is_empty() => AddProviderMode::Error {
+            message: "the local server answers but has no models installed (embeddings excluded)"
+                .to_string(),
+            providers,
+            cursor,
+            return_to_list: true,
+        },
+        Ok(models) => AddProviderMode::ModelPick {
+            provider,
+            providers,
+            cursor,
+            models,
+            model_cursor: 0,
+            target: ModelPickTarget::Main,
+            main: None,
+        },
+        Err(e) => AddProviderMode::LocalDiscoverError {
+            provider,
+            providers,
+            cursor,
+            message: onboarding_error(e.message),
+            start_hint: e.start_hint,
+        },
+    }
 }
 
 fn handle_add_provider_key(
@@ -548,11 +1074,18 @@ fn handle_add_provider_key(
     message: &mut String,
 ) -> AddProviderAction {
     // Exit keys are resolved before any modal state can consume them. `q` is
-    // excluded only while it is literal API-key input.
+    // excluded only while it is literal text input (the API key or an
+    // account label).
     if is_ctrl_c(key, modifiers) {
         return AddProviderAction::Exit;
     }
-    if key == KeyCode::Char('q') && !matches!(&mode, AddProviderMode::KeyInput { .. }) {
+    let is_text_input = matches!(
+        &mode,
+        AddProviderMode::KeyInput { .. }
+            | AddProviderMode::OAuthAccount { .. }
+            | AddProviderMode::LogoutAccount { .. }
+    );
+    if key == KeyCode::Char('q') && !is_text_input {
         return AddProviderAction::Exit;
     }
     match mode {
@@ -572,6 +1105,21 @@ fn handle_add_provider_key(
                 }
                 AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
             }
+            KeyCode::Char('x') => {
+                let Some(provider) = providers.get(cursor).cloned() else {
+                    return AddProviderAction::Stay(AddProviderMode::List { providers, cursor });
+                };
+                if provider.auth_kind != api::AuthKind::Oauth {
+                    *message = "only OAuth providers can log out".to_string();
+                    return AddProviderAction::Stay(AddProviderMode::List { providers, cursor });
+                }
+                AddProviderAction::Stay(AddProviderMode::LogoutAccount {
+                    provider,
+                    providers,
+                    cursor,
+                    value: String::new(),
+                })
+            }
             KeyCode::Enter => {
                 let Some(provider) = providers.get(cursor).cloned() else {
                     return AddProviderAction::Stay(AddProviderMode::List { providers, cursor });
@@ -583,35 +1131,153 @@ fn handle_add_provider_key(
                         cursor,
                         value: String::new(),
                     }),
-                    api::AuthKind::Oauth if provider.suspension_warning.is_some() => {
-                        AddProviderAction::Stay(AddProviderMode::ConfirmRisk {
+                    api::AuthKind::Local => AddProviderAction::Stay(
+                        AddProviderMode::LocalDiscoverLoading {
+                            provider,
+                            providers,
+                            cursor,
+                        },
+                    ),
+                    api::AuthKind::Oauth if provider.import_available => {
+                        AddProviderAction::Stay(AddProviderMode::OAuthImportConfirm {
                             provider,
                             providers,
                             cursor,
                         })
                     }
-                    api::AuthKind::Oauth => AddProviderAction::Stay(start_provider_login(
+                    api::AuthKind::Oauth => AddProviderAction::Stay(AddProviderMode::OAuthAccount {
+                        provider,
+                        providers,
+                        cursor,
+                        import_if_available: false,
+                        value: String::new(),
+                    }),
+                }
+            }
+            _ => AddProviderAction::Stay(AddProviderMode::List { providers, cursor }),
+        },
+        AddProviderMode::OAuthImportConfirm {
+            provider,
+            providers,
+            cursor,
+        } => match key {
+            KeyCode::Esc => {
+                *message = "OAuth login cancelled".to_string();
+                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+            }
+            KeyCode::Char('n') => AddProviderAction::Stay(AddProviderMode::OAuthAccount {
+                provider,
+                providers,
+                cursor,
+                import_if_available: false,
+                value: String::new(),
+            }),
+            KeyCode::Enter | KeyCode::Char('y') => {
+                AddProviderAction::Stay(AddProviderMode::OAuthAccount {
+                    provider,
+                    providers,
+                    cursor,
+                    import_if_available: true,
+                    value: String::new(),
+                })
+            }
+            _ => AddProviderAction::Stay(AddProviderMode::OAuthImportConfirm {
+                provider,
+                providers,
+                cursor,
+            }),
+        },
+        AddProviderMode::OAuthAccount {
+            provider,
+            providers,
+            cursor,
+            import_if_available,
+            mut value,
+        } => match key {
+            KeyCode::Esc => {
+                *message = "OAuth login cancelled".to_string();
+                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+            }
+            KeyCode::Backspace => {
+                value.pop();
+                AddProviderAction::Stay(AddProviderMode::OAuthAccount {
+                    provider,
+                    providers,
+                    cursor,
+                    import_if_available,
+                    value,
+                })
+            }
+            KeyCode::Char(c) if is_account_label_char(c) => {
+                if value.chars().count() < ACCOUNT_LABEL_MAX {
+                    value.push(c);
+                } else {
+                    *message = "account label: max 32 characters".to_string();
+                }
+                AddProviderAction::Stay(AddProviderMode::OAuthAccount {
+                    provider,
+                    providers,
+                    cursor,
+                    import_if_available,
+                    value,
+                })
+            }
+            KeyCode::Char(_) => {
+                *message =
+                    "account label: letters, digits, dot, dash or underscore only".to_string();
+                AddProviderAction::Stay(AddProviderMode::OAuthAccount {
+                    provider,
+                    providers,
+                    cursor,
+                    import_if_available,
+                    value,
+                })
+            }
+            KeyCode::Enter => {
+                let account = none_or(&value);
+                if provider.suspension_warning.is_some() {
+                    AddProviderAction::Stay(AddProviderMode::ConfirmRisk {
+                        provider,
+                        providers,
+                        cursor,
+                        account,
+                        import_if_available,
+                    })
+                } else {
+                    AddProviderAction::Stay(start_provider_login(
                         provider,
                         providers,
                         cursor,
                         false,
+                        account,
+                        import_if_available,
                         snap,
                         bootstrap_identity,
-                    )),
+                    ))
                 }
             }
-            _ => AddProviderAction::Stay(AddProviderMode::List { providers, cursor }),
+            _ => AddProviderAction::Stay(AddProviderMode::OAuthAccount {
+                provider,
+                providers,
+                cursor,
+                import_if_available,
+                value,
+            }),
         },
         AddProviderMode::ConfirmRisk {
             provider,
             providers,
             cursor,
+            account,
+            import_if_available,
         } => match key {
             KeyCode::Enter => AddProviderAction::Stay(start_provider_login(
                 provider,
                 providers,
                 cursor,
                 true,
+                account,
+                import_if_available,
                 snap,
                 bootstrap_identity,
             )),
@@ -623,6 +1289,68 @@ fn handle_add_provider_key(
                 provider,
                 providers,
                 cursor,
+                account,
+                import_if_available,
+            }),
+        },
+        AddProviderMode::LogoutAccount {
+            provider,
+            providers,
+            cursor,
+            mut value,
+        } => match key {
+            KeyCode::Esc => {
+                *message = "logout cancelled".to_string();
+                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+            }
+            KeyCode::Backspace => {
+                value.pop();
+                AddProviderAction::Stay(AddProviderMode::LogoutAccount {
+                    provider,
+                    providers,
+                    cursor,
+                    value,
+                })
+            }
+            KeyCode::Char(c) if is_account_label_char(c) => {
+                if value.chars().count() < ACCOUNT_LABEL_MAX {
+                    value.push(c);
+                }
+                AddProviderAction::Stay(AddProviderMode::LogoutAccount {
+                    provider,
+                    providers,
+                    cursor,
+                    value,
+                })
+            }
+            KeyCode::Enter => {
+                let account = none_or(&value);
+                let Some(identity) = onboarding_identity(snap, bootstrap_identity) else {
+                    return AddProviderAction::Stay(AddProviderMode::Error {
+                        message: "daemon not answering: restart with `lupin`".to_string(),
+                        providers,
+                        cursor,
+                        return_to_list: true,
+                    });
+                };
+                match api::logout(&identity, &provider.id, account.as_deref()) {
+                    Ok(()) => {
+                        *message = format!("logged out of {}", provider.id);
+                        AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+                    }
+                    Err(error) => AddProviderAction::Stay(AddProviderMode::Error {
+                        message: onboarding_error(error),
+                        providers,
+                        cursor,
+                        return_to_list: true,
+                    }),
+                }
+            }
+            _ => AddProviderAction::Stay(AddProviderMode::LogoutAccount {
+                provider,
+                providers,
+                cursor,
+                value,
             }),
         },
         AddProviderMode::KeyInput {
@@ -655,26 +1383,26 @@ fn handle_add_provider_key(
                 })
             }
             KeyCode::Enter => {
-                let result =
-                    submit_provider_key(&provider.id, &mut value, snap, bootstrap_identity);
-                match result {
-                    Ok(()) => {
-                        let refreshed = api::snapshot(cfg_path, bootstrap_identity);
-                        *message = "provider added".to_string();
-                        if needs_provider(&refreshed) {
-                            AddProviderAction::Stay(AddProviderMode::Success(
-                                "provider added".to_string(),
-                            ))
-                        } else {
-                            AddProviderAction::Dashboard(refreshed)
-                        }
-                    }
-                    Err(error) => AddProviderAction::Stay(AddProviderMode::Error {
-                        message: onboarding_error(error),
+                if provider.economy.is_some() {
+                    AddProviderAction::Stay(AddProviderMode::EconomyChoice {
+                        provider,
                         providers,
                         cursor,
-                        return_to_list: true,
-                    }),
+                        key: value,
+                        economy: false,
+                    })
+                } else {
+                    after_key_details(
+                        provider,
+                        providers,
+                        cursor,
+                        value,
+                        false,
+                        snap,
+                        bootstrap_identity,
+                        cfg_path,
+                        message,
+                    )
                 }
             }
             _ => AddProviderAction::Stay(AddProviderMode::KeyInput {
@@ -682,6 +1410,415 @@ fn handle_add_provider_key(
                 providers,
                 cursor,
                 value,
+            }),
+        },
+        AddProviderMode::EconomyChoice {
+            provider,
+            providers,
+            cursor,
+            key: entered_key,
+            economy,
+        } => match key {
+            KeyCode::Esc => {
+                *message = "API key entry cancelled".to_string();
+                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+            }
+            KeyCode::Char('1') => AddProviderAction::Stay(AddProviderMode::EconomyChoice {
+                provider,
+                providers,
+                cursor,
+                key: entered_key,
+                economy: false,
+            }),
+            KeyCode::Char('2') => AddProviderAction::Stay(AddProviderMode::EconomyChoice {
+                provider,
+                providers,
+                cursor,
+                key: entered_key,
+                economy: true,
+            }),
+            KeyCode::Enter => after_key_details(
+                provider,
+                providers,
+                cursor,
+                entered_key,
+                economy,
+                snap,
+                bootstrap_identity,
+                cfg_path,
+                message,
+            ),
+            _ => AddProviderAction::Stay(AddProviderMode::EconomyChoice {
+                provider,
+                providers,
+                cursor,
+                key: entered_key,
+                economy,
+            }),
+        },
+        AddProviderMode::SaveAnywayConfirm {
+            provider,
+            providers,
+            cursor,
+            key: entered_key,
+            economy,
+            failover,
+            message: shown,
+        } => match key {
+            KeyCode::Char('y') => submit_key(
+                provider,
+                providers,
+                cursor,
+                entered_key,
+                economy,
+                failover,
+                true,
+                snap,
+                bootstrap_identity,
+                cfg_path,
+                message,
+            ),
+            KeyCode::Enter | KeyCode::Char('n') | KeyCode::Esc => {
+                *message = format!("{shown} (not saved)");
+                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+            }
+            _ => AddProviderAction::Stay(AddProviderMode::SaveAnywayConfirm {
+                provider,
+                providers,
+                cursor,
+                key: entered_key,
+                economy,
+                failover,
+                message: shown,
+            }),
+        },
+        AddProviderMode::LocalDiscoverLoading {
+            provider,
+            providers,
+            cursor,
+        } => AddProviderAction::Stay(AddProviderMode::LocalDiscoverLoading {
+            provider,
+            providers,
+            cursor,
+        }),
+        AddProviderMode::LocalDiscoverError {
+            provider,
+            providers,
+            cursor,
+            message: shown,
+            start_hint,
+        } => match key {
+            KeyCode::Enter => AddProviderAction::Stay(AddProviderMode::LocalDiscoverLoading {
+                provider,
+                providers,
+                cursor,
+            }),
+            KeyCode::Esc => AddProviderAction::Stay(AddProviderMode::List { providers, cursor }),
+            _ => AddProviderAction::Stay(AddProviderMode::LocalDiscoverError {
+                provider,
+                providers,
+                cursor,
+                message: shown,
+                start_hint,
+            }),
+        },
+        AddProviderMode::ModelPick {
+            provider,
+            providers,
+            cursor,
+            models,
+            mut model_cursor,
+            target,
+            main,
+        } => match key {
+            KeyCode::Esc => {
+                *message = "local setup cancelled".to_string();
+                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                model_cursor = model_cursor.saturating_sub(1);
+                AddProviderAction::Stay(AddProviderMode::ModelPick {
+                    provider,
+                    providers,
+                    cursor,
+                    models,
+                    model_cursor,
+                    target,
+                    main,
+                })
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if model_cursor + 1 < models.len() {
+                    model_cursor += 1;
+                }
+                AddProviderAction::Stay(AddProviderMode::ModelPick {
+                    provider,
+                    providers,
+                    cursor,
+                    models,
+                    model_cursor,
+                    target,
+                    main,
+                })
+            }
+            KeyCode::Enter => {
+                let Some(picked) = models.get(model_cursor).map(|m| m.id.clone()) else {
+                    return AddProviderAction::Stay(AddProviderMode::ModelPick {
+                        provider,
+                        providers,
+                        cursor,
+                        models,
+                        model_cursor,
+                        target,
+                        main,
+                    });
+                };
+                match target {
+                    ModelPickTarget::Main => {
+                        // The light picker's cursor starts on the same model:
+                        // enter with no movement reproduces "same as main".
+                        AddProviderAction::Stay(AddProviderMode::ModelPick {
+                            provider,
+                            providers,
+                            cursor,
+                            models,
+                            model_cursor,
+                            target: ModelPickTarget::Light,
+                            main: Some(picked),
+                        })
+                    }
+                    ModelPickTarget::Light => {
+                        let main_id = main.unwrap_or_else(|| picked.clone());
+                        after_light_pick(
+                            provider,
+                            providers,
+                            cursor,
+                            models,
+                            main_id,
+                            picked,
+                            snap,
+                            bootstrap_identity,
+                            cfg_path,
+                            message,
+                        )
+                    }
+                }
+            }
+            _ => AddProviderAction::Stay(AddProviderMode::ModelPick {
+                provider,
+                providers,
+                cursor,
+                models,
+                model_cursor,
+                target,
+                main,
+            }),
+        },
+        AddProviderMode::VisionPick {
+            provider,
+            providers,
+            cursor,
+            models,
+            main,
+            light,
+            candidates,
+            mut pick_cursor,
+        } => match key {
+            KeyCode::Esc => {
+                *message = "local setup cancelled".to_string();
+                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                pick_cursor = pick_cursor.saturating_sub(1);
+                AddProviderAction::Stay(AddProviderMode::VisionPick {
+                    provider,
+                    providers,
+                    cursor,
+                    models,
+                    main,
+                    light,
+                    candidates,
+                    pick_cursor,
+                })
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if pick_cursor < candidates.len() {
+                    pick_cursor += 1;
+                }
+                AddProviderAction::Stay(AddProviderMode::VisionPick {
+                    provider,
+                    providers,
+                    cursor,
+                    models,
+                    main,
+                    light,
+                    candidates,
+                    pick_cursor,
+                })
+            }
+            KeyCode::Enter => {
+                let vision = if pick_cursor == 0 {
+                    None
+                } else {
+                    candidates.get(pick_cursor - 1).cloned()
+                };
+                after_vision(
+                    provider,
+                    providers,
+                    cursor,
+                    models,
+                    main,
+                    light,
+                    vision,
+                    snap,
+                    bootstrap_identity,
+                    cfg_path,
+                    message,
+                )
+            }
+            _ => AddProviderAction::Stay(AddProviderMode::VisionPick {
+                provider,
+                providers,
+                cursor,
+                models,
+                main,
+                light,
+                candidates,
+                pick_cursor,
+            }),
+        },
+        AddProviderMode::LongContextConfirm {
+            provider,
+            providers,
+            cursor,
+            main,
+            light,
+            vision,
+        } => match key {
+            KeyCode::Esc => {
+                *message = "local setup cancelled".to_string();
+                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+            }
+            KeyCode::Char('y') => after_local_details(
+                provider,
+                providers,
+                cursor,
+                main,
+                light,
+                vision,
+                true,
+                snap,
+                bootstrap_identity,
+                cfg_path,
+                message,
+            ),
+            KeyCode::Enter | KeyCode::Char('n') => after_local_details(
+                provider,
+                providers,
+                cursor,
+                main,
+                light,
+                vision,
+                false,
+                snap,
+                bootstrap_identity,
+                cfg_path,
+                message,
+            ),
+            _ => AddProviderAction::Stay(AddProviderMode::LongContextConfirm {
+                provider,
+                providers,
+                cursor,
+                main,
+                light,
+                vision,
+            }),
+        },
+        AddProviderMode::FailoverOffer {
+            pending,
+            providers,
+            cursor,
+            candidates,
+            mut pick_cursor,
+        } => match key {
+            KeyCode::Esc => {
+                *message = "provider setup cancelled".to_string();
+                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                pick_cursor = pick_cursor.saturating_sub(1);
+                AddProviderAction::Stay(AddProviderMode::FailoverOffer {
+                    pending,
+                    providers,
+                    cursor,
+                    candidates,
+                    pick_cursor,
+                })
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if pick_cursor < candidates.len() {
+                    pick_cursor += 1;
+                }
+                AddProviderAction::Stay(AddProviderMode::FailoverOffer {
+                    pending,
+                    providers,
+                    cursor,
+                    candidates,
+                    pick_cursor,
+                })
+            }
+            KeyCode::Enter => {
+                let failover = if pick_cursor == 0 {
+                    None
+                } else {
+                    candidates.get(pick_cursor - 1).cloned()
+                };
+                match pending {
+                    PendingSubmit::Key {
+                        provider,
+                        key: entered_key,
+                        economy,
+                    } => submit_key(
+                        provider,
+                        providers,
+                        cursor,
+                        entered_key,
+                        economy,
+                        failover,
+                        false,
+                        snap,
+                        bootstrap_identity,
+                        cfg_path,
+                        message,
+                    ),
+                    PendingSubmit::Local {
+                        provider,
+                        main,
+                        light,
+                        vision,
+                        long_context,
+                    } => submit_local(
+                        provider,
+                        providers,
+                        cursor,
+                        main,
+                        light,
+                        vision,
+                        long_context,
+                        failover,
+                        snap,
+                        bootstrap_identity,
+                        cfg_path,
+                        message,
+                    ),
+                }
+            }
+            _ => AddProviderAction::Stay(AddProviderMode::FailoverOffer {
+                pending,
+                providers,
+                cursor,
+                candidates,
+                pick_cursor,
             }),
         },
         AddProviderMode::OAuthWaiting {
@@ -883,7 +2020,8 @@ mod tests {
     use super::{
         agent_rows, agents_table, clamp_selected, clear_cancelled_key, handle_add_provider_key,
         onboarding_error, order_message, promote_success_to_dashboard, push_pick,
-        redact_key_from_error, submit_provider_key, AddProviderAction, AddProviderMode,
+        redact_key_from_error, submit_key, AddProviderAction, AddProviderMode, ModelPickTarget,
+        PendingSubmit,
     };
     use crate::api::{AuthKind, ProviderRow, Snapshot};
     use crossterm::event::{KeyCode, KeyModifiers};
@@ -907,6 +2045,9 @@ mod tests {
             description: "Catalogue Row".to_string(),
             auth_kind,
             suspension_warning: None,
+            economy: None,
+            start_hint: None,
+            import_available: false,
         }
     }
 
@@ -990,18 +2131,39 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn ctrl_c_exits_from_every_onboarding_state() {
-        let states = vec![
+    /// Every onboarding state, text-input ones included: ctrl-c is the global
+    /// exit regardless of what the current field is doing with a plain `q`.
+    fn every_onboarding_state() -> Vec<AddProviderMode> {
+        vec![
             AddProviderMode::Loading,
             AddProviderMode::List {
                 providers: vec![provider(AuthKind::Key)],
                 cursor: 0,
             },
+            AddProviderMode::OAuthImportConfirm {
+                provider: provider(AuthKind::Oauth),
+                providers: Vec::new(),
+                cursor: 0,
+            },
+            AddProviderMode::OAuthAccount {
+                provider: provider(AuthKind::Oauth),
+                providers: Vec::new(),
+                cursor: 0,
+                import_if_available: false,
+                value: "work".to_string(),
+            },
             AddProviderMode::ConfirmRisk {
                 provider: provider(AuthKind::Oauth),
                 providers: Vec::new(),
                 cursor: 0,
+                account: None,
+                import_if_available: false,
+            },
+            AddProviderMode::LogoutAccount {
+                provider: provider(AuthKind::Oauth),
+                providers: Vec::new(),
+                cursor: 0,
+                value: "work".to_string(),
             },
             AddProviderMode::KeyInput {
                 provider: provider(AuthKind::Key),
@@ -1009,6 +2171,72 @@ mod tests {
                 cursor: 0,
                 value: "secret".to_string(),
             },
+            AddProviderMode::EconomyChoice {
+                provider: provider(AuthKind::Key),
+                providers: Vec::new(),
+                cursor: 0,
+                key: "secret".to_string(),
+                economy: false,
+            },
+            AddProviderMode::SaveAnywayConfirm {
+                provider: provider(AuthKind::Key),
+                providers: Vec::new(),
+                cursor: 0,
+                key: "secret".to_string(),
+                economy: false,
+                failover: None,
+                message: "the provider does not answer".to_string(),
+            },
+            AddProviderMode::LocalDiscoverLoading {
+                provider: provider(AuthKind::Local),
+                providers: Vec::new(),
+                cursor: 0,
+            },
+            AddProviderMode::LocalDiscoverError {
+                provider: provider(AuthKind::Local),
+                providers: Vec::new(),
+                cursor: 0,
+                message: "local server unreachable".to_string(),
+                start_hint: Some("ollama serve".to_string()),
+            },
+            AddProviderMode::ModelPick {
+                provider: provider(AuthKind::Local),
+                providers: Vec::new(),
+                cursor: 0,
+                models: Vec::new(),
+                model_cursor: 0,
+                target: ModelPickTarget::Main,
+                main: None,
+            },
+            AddProviderMode::VisionPick {
+                provider: provider(AuthKind::Local),
+                providers: Vec::new(),
+                cursor: 0,
+                models: Vec::new(),
+                main: "big".to_string(),
+                light: "big".to_string(),
+                candidates: Vec::new(),
+                pick_cursor: 0,
+            },
+            AddProviderMode::LongContextConfirm {
+                provider: provider(AuthKind::Local),
+                providers: Vec::new(),
+                cursor: 0,
+                main: "big".to_string(),
+                light: "small".to_string(),
+                vision: None,
+            },
+            AddProviderMode::FailoverOffer {
+                pending: PendingSubmit::Key {
+                    provider: provider(AuthKind::Key),
+                    key: "secret".to_string(),
+                    economy: false,
+                },
+                providers: Vec::new(),
+                cursor: 0,
+                candidates: vec!["other".to_string()],
+                pick_cursor: 0,
+            },
             AddProviderMode::OAuthWaiting {
                 provider: provider(AuthKind::Oauth),
                 providers: Vec::new(),
@@ -1023,9 +2251,12 @@ mod tests {
                 return_to_list: true,
             },
             AddProviderMode::Success("provider added".to_string()),
-        ];
+        ]
+    }
 
-        for state in states {
+    #[test]
+    fn ctrl_c_exits_from_every_onboarding_state() {
+        for state in every_onboarding_state() {
             assert!(matches!(
                 route_with_modifiers(state, KeyCode::Char('c'), KeyModifiers::CONTROL),
                 AddProviderAction::Exit
@@ -1033,40 +2264,40 @@ mod tests {
         }
     }
 
+    /// The text-input states, where a plain `q` must be swallowed as a
+    /// character rather than treated as the global exit key.
+    fn is_text_input_state(mode: &AddProviderMode) -> bool {
+        matches!(
+            mode,
+            AddProviderMode::KeyInput { .. }
+                | AddProviderMode::OAuthAccount { .. }
+                | AddProviderMode::LogoutAccount { .. }
+        )
+    }
+
     #[test]
     fn q_exits_every_non_text_onboarding_state() {
-        let states = vec![
-            AddProviderMode::Loading,
-            AddProviderMode::List {
-                providers: vec![provider(AuthKind::Key)],
-                cursor: 0,
-            },
-            AddProviderMode::ConfirmRisk {
-                provider: provider(AuthKind::Oauth),
-                providers: Vec::new(),
-                cursor: 0,
-            },
-            AddProviderMode::OAuthWaiting {
-                provider: provider(AuthKind::Oauth),
-                providers: Vec::new(),
-                cursor: 0,
-                job: "job-7".to_string(),
-                url: None,
-            },
-            AddProviderMode::Error {
-                message: "failed".to_string(),
-                providers: Vec::new(),
-                cursor: 0,
-                return_to_list: true,
-            },
-            AddProviderMode::Success("provider added".to_string()),
-        ];
-
-        for state in states {
+        for state in every_onboarding_state() {
+            if is_text_input_state(&state) {
+                continue;
+            }
             assert!(matches!(
                 route(state, KeyCode::Char('q')),
                 AddProviderAction::Exit
             ));
+        }
+    }
+
+    #[test]
+    fn q_is_literal_text_inside_every_text_input_state() {
+        for state in every_onboarding_state() {
+            if !is_text_input_state(&state) {
+                continue;
+            }
+            assert!(
+                matches!(route(state, KeyCode::Char('q')), AddProviderAction::Stay(_)),
+                "q must stay literal text, not exit"
+            );
         }
     }
 
@@ -1181,7 +2412,7 @@ mod tests {
 
     #[test]
     fn retryable_error_acknowledgement_restores_the_existing_catalogue() {
-        let error = stayed_mode(route(
+        let account_step = stayed_mode(route(
             AddProviderMode::List {
                 providers: vec![
                     provider_with_id("oauth-first", AuthKind::Oauth),
@@ -1191,6 +2422,9 @@ mod tests {
             },
             KeyCode::Enter,
         ));
+        // The account-label step takes no network round trip; the login
+        // attempt (and so the daemon-not-answering error) fires on its Enter.
+        let error = stayed_mode(route(account_step, KeyCode::Enter));
         assert!(matches!(error, AddProviderMode::Error { .. }));
         let acknowledged = stayed_mode(route(error, KeyCode::Enter));
         let AddProviderMode::List { providers, cursor } = acknowledged else {
@@ -1208,14 +2442,24 @@ mod tests {
     }
 
     #[test]
-    fn failed_key_submission_clears_the_sensitive_buffer() {
-        let snap = empty_snapshot();
-        let mut value = "secret-value".to_string();
-        assert_eq!(
-            submit_provider_key("catalogue-key", &mut value, &snap, None),
-            Err("daemon not answering: restart with `lupin`".to_string())
+    fn a_daemon_not_answering_failure_is_a_hard_error_not_a_save_anyway_retry() {
+        let action = submit_key(
+            provider(AuthKind::Key),
+            Vec::new(),
+            0,
+            "secret-value".to_string(),
+            false,
+            None,
+            false,
+            &empty_snapshot(),
+            None,
+            std::path::Path::new(""),
+            &mut String::new(),
         );
-        assert!(value.is_empty());
+        let AddProviderAction::Stay(AddProviderMode::Error { message, .. }) = action else {
+            panic!("a daemon that never answered must be a hard error, not a retry offer");
+        };
+        assert_eq!(message, "daemon not answering: restart with `lupin`");
     }
 
     #[test]
@@ -1227,10 +2471,10 @@ mod tests {
     }
 
     #[test]
-    fn oauth_warning_enters_confirmation_without_starting_login() {
+    fn oauth_warning_enters_confirmation_after_the_account_step_without_starting_login() {
         let mut row = provider(AuthKind::Oauth);
         row.suspension_warning = Some("Account suspension risk".to_string());
-        let action = handle_add_provider_key(
+        let account_step = stayed_mode(handle_add_provider_key(
             AddProviderMode::List {
                 providers: vec![row],
                 cursor: 0,
@@ -1241,7 +2485,12 @@ mod tests {
             None,
             std::path::Path::new(""),
             &mut String::new(),
+        ));
+        assert!(
+            matches!(account_step, AddProviderMode::OAuthAccount { .. }),
+            "every OAuth row offers the account label first"
         );
+        let action = route(account_step, KeyCode::Enter);
         assert!(matches!(
             action,
             AddProviderAction::Stay(AddProviderMode::ConfirmRisk { .. })

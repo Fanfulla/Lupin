@@ -44,8 +44,9 @@ the Node registry, never from hardcoded Rust rows:
 - Successful setup preserves the running daemon's port and local token, then
   returns to the normal dashboard without disconnecting.
 
-Local-runtime discovery remains in `lupin init`, because that flow probes live
-models and asks for slot assignments.
+Local runtimes are rows in the same screen (ADR-51): the TUI probes the live
+server through the control API, shows windows and tool support per model, and
+asks for the main and light picks before anything is saved.
 
 - Reads `~/.lupin/config.json` directly after setup. Before the first profile,
   it reaches the bootstrap daemon through the identity supplied by bare

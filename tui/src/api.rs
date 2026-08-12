@@ -36,6 +36,7 @@ pub struct Tier {
 pub enum AuthKind {
     Key,
     Oauth,
+    Local,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -46,6 +47,37 @@ pub struct ProviderRow {
     pub auth_kind: AuthKind,
     #[serde(default)]
     pub suspension_warning: Option<String>,
+    /// Key rows only: a human-readable description of the economy preset.
+    #[serde(default)]
+    pub economy: Option<String>,
+    /// Local rows only: the shell command that starts the server, shown when
+    /// discovery fails.
+    #[serde(default)]
+    pub start_hint: Option<String>,
+    /// OAuth rows: credentials of the official provider CLI exist on this
+    /// machine and can be imported without a browser.
+    #[serde(default)]
+    pub import_available: bool,
+}
+
+/// One model the local runtime discovery found (ADR-51): filtered to chat
+/// models already, so an empty list means "server up, nothing installed".
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalModel {
+    pub id: String,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    /// "loaded" = the window the model actually runs with; "max" = the
+    /// model's theoretical maximum, which is not what gets served.
+    #[serde(default)]
+    pub context_window_source: Option<String>,
+    #[serde(default)]
+    pub supports_tools: Option<bool>,
+    #[serde(default)]
+    pub supports_vision: Option<bool>,
+    #[serde(default)]
+    pub context_too_small: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -132,9 +164,17 @@ pub fn start_login(
     identity: &BootstrapIdentity,
     provider: &str,
     accept_risk: bool,
+    account: Option<&str>,
+    import_if_available: bool,
 ) -> Result<String, String> {
     let url = format!("http://127.0.0.1:{}/v1/lupin/login", identity.port);
-    let body = serde_json::json!({ "provider": provider, "acceptRisk": accept_risk });
+    let mut body = serde_json::json!({ "provider": provider, "acceptRisk": accept_risk });
+    if let Some(a) = account {
+        body["account"] = serde_json::json!(a);
+    }
+    if import_if_available {
+        body["importIfAvailable"] = serde_json::json!(true);
+    }
     let res = control_client()?
         .post(url)
         .header(
@@ -164,10 +204,163 @@ pub fn poll_login(identity: &BootstrapIdentity, job: &str) -> Result<LoginPoll, 
     parse_login_poll(status, &body)
 }
 
-pub fn setup_key(identity: &BootstrapIdentity, provider_id: &str, key: &str) -> Result<(), String> {
+/// The optional fields `setup-key` grows beyond `{ providerId, key }`.
+#[derive(Debug, Clone, Default)]
+pub struct SetupKeyOptions<'a> {
+    pub economy: bool,
+    /// An existing profile the new one fails over to.
+    pub failover: Option<&'a str>,
+    /// Retry after a failed connectivity test: store anyway.
+    pub save_anyway: bool,
+}
+
+/// A rejected `setup-key`: the message for the talking line, and whether the
+/// daemon is offering the "save anyway" escape hatch (a failed connectivity
+/// test only, never a bad request).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupKeyError {
+    pub message: String,
+    pub can_save_anyway: bool,
+}
+
+pub fn setup_key(
+    identity: &BootstrapIdentity,
+    provider_id: &str,
+    key: &str,
+    opts: &SetupKeyOptions,
+) -> Result<(), SetupKeyError> {
     let url = format!("http://127.0.0.1:{}/v1/lupin/setup-key", identity.port);
-    let body = serde_json::json!({ "providerId": provider_id, "key": key });
-    let res = setup_key_client()?
+    let mut body = serde_json::json!({ "providerId": provider_id, "key": key });
+    if opts.economy {
+        body["economy"] = serde_json::json!(true);
+    }
+    if let Some(f) = opts.failover {
+        body["failover"] = serde_json::json!(f);
+    }
+    if opts.save_anyway {
+        body["saveAnyway"] = serde_json::json!(true);
+    }
+    let client = setup_key_client().map_err(|e| SetupKeyError {
+        message: e,
+        can_save_anyway: false,
+    })?;
+    let res = client
+        .post(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", identity.local_token),
+        )
+        .json(&body)
+        .send()
+        .map_err(|_| SetupKeyError {
+            message: daemon_not_answering(),
+            can_save_anyway: false,
+        })?;
+    let status = res.status().as_u16();
+    let body = res.text().unwrap_or_default();
+    parse_setup_key(status, &body)
+}
+
+/// A rejected `discover-local`/`setup-local`: both share the same envelope, an
+/// unreachable local server carries the start command as its own remedy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDiscoveryError {
+    pub message: String,
+    pub start_hint: Option<String>,
+}
+
+pub fn discover_local(
+    identity: &BootstrapIdentity,
+    provider_id: &str,
+) -> Result<Vec<LocalModel>, LocalDiscoveryError> {
+    let url = format!("http://127.0.0.1:{}/v1/lupin/discover-local", identity.port);
+    let body = serde_json::json!({ "providerId": provider_id });
+    let client = control_client().map_err(|e| LocalDiscoveryError {
+        message: e,
+        start_hint: None,
+    })?;
+    let res = client
+        .post(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", identity.local_token),
+        )
+        .json(&body)
+        .send()
+        .map_err(|_| LocalDiscoveryError {
+            message: daemon_not_answering(),
+            start_hint: None,
+        })?;
+    let status = res.status().as_u16();
+    let body = res.text().unwrap_or_default();
+    parse_discover_local(status, &body)
+}
+
+/// The picks `setup-local` writes into the new profile.
+pub struct SetupLocalRequest<'a> {
+    pub provider_id: &'a str,
+    pub main: &'a str,
+    pub light: &'a str,
+    /// Offered only for models that declare vision and differ from `main`.
+    pub vision: Option<&'a str>,
+    pub long_context: bool,
+    pub failover: Option<&'a str>,
+}
+
+pub fn setup_local(
+    identity: &BootstrapIdentity,
+    req: &SetupLocalRequest,
+) -> Result<(), LocalDiscoveryError> {
+    let url = format!("http://127.0.0.1:{}/v1/lupin/setup-local", identity.port);
+    let mut body = serde_json::json!({
+        "providerId": req.provider_id,
+        "main": req.main,
+        "light": req.light,
+    });
+    if let Some(v) = req.vision {
+        body["vision"] = serde_json::json!(v);
+    }
+    if req.long_context {
+        body["longContext"] = serde_json::json!(true);
+    }
+    if let Some(f) = req.failover {
+        body["failover"] = serde_json::json!(f);
+    }
+    // setup-local re-runs the live discovery server-side before writing (a
+    // stale screen must not persist a model the server no longer serves), so
+    // it deserves the same generous timeout as setup-key.
+    let client = setup_key_client().map_err(|e| LocalDiscoveryError {
+        message: e,
+        start_hint: None,
+    })?;
+    let res = client
+        .post(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", identity.local_token),
+        )
+        .json(&body)
+        .send()
+        .map_err(|_| LocalDiscoveryError {
+            message: daemon_not_answering(),
+            start_hint: None,
+        })?;
+    let status = res.status().as_u16();
+    let body = res.text().unwrap_or_default();
+    parse_setup_local(status, &body)
+}
+
+pub fn logout(
+    identity: &BootstrapIdentity,
+    provider: &str,
+    account: Option<&str>,
+) -> Result<(), String> {
+    let url = format!("http://127.0.0.1:{}/v1/lupin/logout", identity.port);
+    let mut body = serde_json::json!({ "provider": provider });
+    if let Some(a) = account {
+        body["account"] = serde_json::json!(a);
+    }
+    let res = control_client()?
         .post(url)
         .header(
             reqwest::header::AUTHORIZATION,
@@ -178,7 +371,7 @@ pub fn setup_key(identity: &BootstrapIdentity, provider_id: &str, key: &str) -> 
         .map_err(|_| daemon_not_answering())?;
     let status = res.status().as_u16();
     let body = res.text().unwrap_or_default();
-    parse_setup_key(status, &body)
+    parse_logout(status, &body)
 }
 
 fn control_client() -> Result<reqwest::blocking::Client, String> {
@@ -263,10 +456,83 @@ struct SetupKeyEnvelope {
     ok: bool,
     #[serde(default)]
     error: Option<String>,
+    #[serde(default, rename = "canSaveAnyway")]
+    can_save_anyway: bool,
 }
 
-fn parse_setup_key(status: u16, body: &str) -> Result<(), String> {
-    let parsed: SetupKeyEnvelope = serde_json::from_str(body).map_err(|_| http_error(status))?;
+fn parse_setup_key(status: u16, body: &str) -> Result<(), SetupKeyError> {
+    let parsed: SetupKeyEnvelope = serde_json::from_str(body).map_err(|_| SetupKeyError {
+        message: http_error(status),
+        can_save_anyway: false,
+    })?;
+    if !(200..300).contains(&status) || !parsed.ok {
+        return Err(SetupKeyError {
+            message: parsed.error.unwrap_or_else(|| http_error(status)),
+            can_save_anyway: parsed.can_save_anyway,
+        });
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct DiscoverLocalEnvelope {
+    ok: bool,
+    #[serde(default)]
+    models: Option<Vec<LocalModel>>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default, rename = "startHint")]
+    start_hint: Option<String>,
+}
+
+fn parse_discover_local(status: u16, body: &str) -> Result<Vec<LocalModel>, LocalDiscoveryError> {
+    let parsed: DiscoverLocalEnvelope =
+        serde_json::from_str(body).map_err(|_| LocalDiscoveryError {
+            message: http_error(status),
+            start_hint: None,
+        })?;
+    if !(200..300).contains(&status) || !parsed.ok {
+        return Err(LocalDiscoveryError {
+            message: parsed.error.unwrap_or_else(|| http_error(status)),
+            start_hint: parsed.start_hint,
+        });
+    }
+    Ok(parsed.models.unwrap_or_default())
+}
+
+#[derive(Deserialize)]
+struct SetupLocalEnvelope {
+    ok: bool,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default, rename = "startHint")]
+    start_hint: Option<String>,
+}
+
+fn parse_setup_local(status: u16, body: &str) -> Result<(), LocalDiscoveryError> {
+    let parsed: SetupLocalEnvelope =
+        serde_json::from_str(body).map_err(|_| LocalDiscoveryError {
+            message: http_error(status),
+            start_hint: None,
+        })?;
+    if !(200..300).contains(&status) || !parsed.ok {
+        return Err(LocalDiscoveryError {
+            message: parsed.error.unwrap_or_else(|| http_error(status)),
+            start_hint: parsed.start_hint,
+        });
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct LogoutEnvelope {
+    ok: bool,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn parse_logout(status: u16, body: &str) -> Result<(), String> {
+    let parsed: LogoutEnvelope = serde_json::from_str(body).map_err(|_| http_error(status))?;
     if !(200..300).contains(&status) || !parsed.ok {
         return Err(parsed.error.unwrap_or_else(|| http_error(status)));
     }
@@ -362,14 +628,48 @@ pub fn switch_profile(snap: &Snapshot, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_login_poll, parse_login_start, parse_providers, parse_setup_key, setup_key, AuthKind,
-        Health, LoginStatus,
+        discover_local, logout, parse_discover_local, parse_login_poll, parse_login_start,
+        parse_providers, parse_setup_key, parse_setup_local, setup_key, setup_local, start_login,
+        AuthKind, Health, LoginStatus, SetupKeyOptions, SetupLocalRequest,
     };
     use crate::config::BootstrapIdentity;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
     use std::time::Duration;
+
+    /// A loopback server that answers `response` once and hands back the raw
+    /// request bytes it received: the only way to check the wire shape a
+    /// client function actually sends, not just what it claims to send.
+    fn capture_request(response: &str) -> (BootstrapIdentity, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let response = response.to_string();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut buf = [0_u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let _ = stream.write_all(response.as_bytes());
+            request
+        });
+        let identity = BootstrapIdentity {
+            port,
+            local_token: "tok".to_string(),
+        };
+        (identity, handle)
+    }
+
+    /// A minimal well-formed HTTP/1.1 JSON response with a correct
+    /// Content-Length, computed from the body so a hand-counted mismatch can
+    /// never leave a test hanging on a client that expects more bytes.
+    fn http_ok(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
 
     /// The reason `fetch_health` checks the status before parsing. The watchdog
     /// answers a 529 whose body is an Anthropic error object, and nothing in
@@ -415,6 +715,41 @@ mod tests {
         assert_eq!(rows[0].suspension_warning, None);
         assert_eq!(rows[1].auth_kind, AuthKind::Oauth);
         assert_eq!(rows[1].suspension_warning.as_deref(), Some("Account risk"));
+    }
+
+    /// ADR-51 parity: local rows, the economy description, the local start
+    /// hint and the OAuth import flag, all optional and absent by default.
+    #[test]
+    fn provider_catalogue_decodes_the_adr_51_fields() {
+        let body = r#"{
+            "ok": true,
+            "providers": [
+                { "id": "key-row", "description": "Key provider", "authKind": "key", "economy": "cheap by default" },
+                {
+                    "id": "local-row",
+                    "description": "Local runtime",
+                    "authKind": "local",
+                    "startHint": "ollama serve"
+                },
+                {
+                    "id": "oauth-row",
+                    "description": "OAuth provider",
+                    "authKind": "oauth",
+                    "importAvailable": true
+                },
+                { "id": "plain-oauth", "description": "No import", "authKind": "oauth" }
+            ]
+        }"#;
+        let rows = parse_providers(200, body).expect("provider catalogue");
+        assert_eq!(rows[0].economy.as_deref(), Some("cheap by default"));
+        assert_eq!(rows[0].start_hint, None);
+        assert!(!rows[0].import_available);
+
+        assert_eq!(rows[1].auth_kind, AuthKind::Local);
+        assert_eq!(rows[1].start_hint.as_deref(), Some("ollama serve"));
+
+        assert!(rows[2].import_available);
+        assert!(!rows[3].import_available, "absent means not importable");
     }
 
     #[test]
@@ -465,8 +800,28 @@ mod tests {
         assert_eq!(parse_setup_key(200, r#"{"ok":true}"#), Ok(()));
         assert_eq!(
             parse_setup_key(400, r#"{"ok":false,"error":"invalid key"}"#),
-            Err("invalid key".to_string())
+            Err(super::SetupKeyError {
+                message: "invalid key".to_string(),
+                can_save_anyway: false,
+            })
         );
+    }
+
+    /// A failed connectivity test carries the save-anyway escape hatch; every
+    /// other rejection (unknown provider, bad body) does not.
+    #[test]
+    fn a_failed_connectivity_test_offers_save_anyway_other_rejections_do_not() {
+        let offered = parse_setup_key(
+            400,
+            r#"{"ok":false,"error":"the provider does not answer","canSaveAnyway":true}"#,
+        )
+        .expect_err("rejected");
+        assert!(offered.can_save_anyway);
+        assert_eq!(offered.message, "the provider does not answer");
+
+        let not_offered = parse_setup_key(404, r#"{"ok":false,"error":"unknown provider"}"#)
+            .expect_err("rejected");
+        assert!(!not_offered.can_save_anyway);
     }
 
     #[test]
@@ -487,9 +842,219 @@ mod tests {
             local_token: "local-token".to_string(),
         };
 
-        let result = setup_key(&identity, "provider", "delayed-key");
+        let result = setup_key(
+            &identity,
+            "provider",
+            "delayed-key",
+            &SetupKeyOptions::default(),
+        );
         server.join().expect("delayed server");
 
         assert_eq!(result, Ok(()));
+    }
+
+    /// The wire shape matters: these fields are camelCase on the daemon side,
+    /// and a mismatched key would silently fail to reach it.
+    #[test]
+    fn setup_key_sends_economy_failover_and_save_anyway_only_when_set() {
+        let (identity, handle) = capture_request(&http_ok(r#"{"ok":true}"#));
+        let opts = SetupKeyOptions {
+            economy: true,
+            failover: Some("kimi-sub"),
+            save_anyway: true,
+        };
+        let result = setup_key(&identity, "openai", "sk-secret", &opts);
+        let request = handle.join().expect("server thread");
+        assert_eq!(result, Ok(()));
+        assert!(request.contains(r#""economy":true"#), "{request}");
+        assert!(request.contains(r#""failover":"kimi-sub""#), "{request}");
+        assert!(request.contains(r#""saveAnyway":true"#), "{request}");
+    }
+
+    #[test]
+    fn setup_key_omits_the_optional_fields_by_default() {
+        let (identity, handle) = capture_request(&http_ok(r#"{"ok":true}"#));
+        let result = setup_key(&identity, "openai", "sk-secret", &SetupKeyOptions::default());
+        let request = handle.join().expect("server thread");
+        assert_eq!(result, Ok(()));
+        assert!(!request.contains("economy"), "{request}");
+        assert!(!request.contains("failover"), "{request}");
+        assert!(!request.contains("saveAnyway"), "{request}");
+    }
+
+    #[test]
+    fn discover_local_sends_the_provider_id() {
+        let (identity, handle) = capture_request(&http_ok(r#"{"ok":true,"models":[]}"#));
+        let result = discover_local(&identity, "ollama");
+        let request = handle.join().expect("server thread");
+        assert_eq!(result, Ok(Vec::new()));
+        assert!(request.contains(r#""providerId":"ollama""#), "{request}");
+    }
+
+    #[test]
+    fn discover_local_reports_models_with_the_three_warnings_data() {
+        let body = r#"{
+            "ok": true,
+            "models": [
+                {
+                    "id": "loaded-model",
+                    "contextWindow": 65536,
+                    "contextWindowSource": "loaded",
+                    "supportsTools": true,
+                    "supportsVision": false,
+                    "contextTooSmall": false
+                },
+                {
+                    "id": "max-only-model",
+                    "contextWindow": 8192,
+                    "contextWindowSource": "max",
+                    "supportsTools": false,
+                    "contextTooSmall": true
+                }
+            ]
+        }"#;
+        let models = parse_discover_local(200, body).expect("model list");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].context_window_source.as_deref(), Some("loaded"));
+        assert!(!models[0].context_too_small);
+        assert_eq!(models[1].context_window_source.as_deref(), Some("max"));
+        assert_eq!(models[1].supports_tools, Some(false));
+        assert!(models[1].context_too_small);
+    }
+
+    /// An empty list is a legal success: the server is up, nothing is
+    /// installed. Different from the 502 unreachable case below.
+    #[test]
+    fn discover_local_empty_list_is_success_not_an_error() {
+        assert_eq!(
+            parse_discover_local(200, r#"{"ok":true,"models":[]}"#),
+            Ok(Vec::new())
+        );
+    }
+
+    #[test]
+    fn discover_local_unreachable_carries_the_start_hint() {
+        let err = parse_discover_local(
+            502,
+            r#"{"ok":false,"error":"local server unreachable at http://127.0.0.1:11434/v1/models","startHint":"ollama serve"}"#,
+        )
+        .expect_err("unreachable");
+        assert_eq!(err.start_hint.as_deref(), Some("ollama serve"));
+        assert!(err.message.contains("unreachable"), "{}", err.message);
+
+        // A route with no configured start hint carries none: never invented.
+        let no_hint =
+            parse_discover_local(502, r#"{"ok":false,"error":"unreachable"}"#).expect_err("x");
+        assert_eq!(no_hint.start_hint, None);
+    }
+
+    #[test]
+    fn setup_local_success_and_rejection_with_and_without_a_start_hint() {
+        assert_eq!(parse_setup_local(200, r#"{"ok":true}"#), Ok(()));
+        let bad_pick = parse_setup_local(
+            404,
+            r#"{"ok":false,"error":"model \"x\" is not on the local server"}"#,
+        )
+        .expect_err("rejected");
+        assert_eq!(bad_pick.start_hint, None);
+        let revalidation_failed = parse_setup_local(
+            502,
+            r#"{"ok":false,"error":"local server unreachable","startHint":"lms server start"}"#,
+        )
+        .expect_err("rejected");
+        assert_eq!(
+            revalidation_failed.start_hint.as_deref(),
+            Some("lms server start")
+        );
+    }
+
+    #[test]
+    fn setup_local_sends_the_picks_and_the_optional_routes() {
+        let (identity, handle) = capture_request(&http_ok(r#"{"ok":true}"#));
+        let req = SetupLocalRequest {
+            provider_id: "ollama",
+            main: "big-model",
+            light: "small-model",
+            vision: Some("vision-model"),
+            long_context: true,
+            failover: Some("kimi-sub"),
+        };
+        let result = setup_local(&identity, &req);
+        let request = handle.join().expect("server thread");
+        assert_eq!(result, Ok(()));
+        assert!(request.contains(r#""providerId":"ollama""#), "{request}");
+        assert!(request.contains(r#""main":"big-model""#), "{request}");
+        assert!(request.contains(r#""light":"small-model""#), "{request}");
+        assert!(request.contains(r#""vision":"vision-model""#), "{request}");
+        assert!(request.contains(r#""longContext":true"#), "{request}");
+        assert!(request.contains(r#""failover":"kimi-sub""#), "{request}");
+    }
+
+    #[test]
+    fn setup_local_omits_vision_long_context_and_failover_when_unset() {
+        let (identity, handle) = capture_request(&http_ok(r#"{"ok":true}"#));
+        let req = SetupLocalRequest {
+            provider_id: "ollama",
+            main: "big-model",
+            light: "big-model",
+            vision: None,
+            long_context: false,
+            failover: None,
+        };
+        let result = setup_local(&identity, &req);
+        let request = handle.join().expect("server thread");
+        assert_eq!(result, Ok(()));
+        assert!(!request.contains("vision"), "{request}");
+        assert!(!request.contains("longContext"), "{request}");
+        assert!(!request.contains("failover"), "{request}");
+    }
+
+    #[test]
+    fn start_login_sends_the_account_label_and_import_flag_only_when_given() {
+        let (identity, handle) =
+            capture_request(&http_ok(r#"{"ok":true,"job":"job-9"}"#));
+        let result = start_login(&identity, "openai", false, Some("work"), true);
+        let request = handle.join().expect("server thread");
+        assert_eq!(result, Ok("job-9".to_string()));
+        assert!(request.contains(r#""account":"work""#), "{request}");
+        assert!(request.contains(r#""importIfAvailable":true"#), "{request}");
+    }
+
+    #[test]
+    fn start_login_omits_account_and_import_by_default() {
+        let (identity, handle) =
+            capture_request(&http_ok(r#"{"ok":true,"job":"job-9"}"#));
+        let result = start_login(&identity, "openai", false, None, false);
+        let request = handle.join().expect("server thread");
+        assert_eq!(result, Ok("job-9".to_string()));
+        assert!(!request.contains("account"), "{request}");
+        assert!(!request.contains("importIfAvailable"), "{request}");
+    }
+
+    #[test]
+    fn logout_sends_the_provider_and_the_account_label_when_given() {
+        let (identity, handle) = capture_request(&http_ok(r#"{"ok":true}"#));
+        let result = logout(&identity, "openai", Some("work"));
+        let request = handle.join().expect("server thread");
+        assert_eq!(result, Ok(()));
+        assert!(request.contains(r#""provider":"openai""#), "{request}");
+        assert!(request.contains(r#""account":"work""#), "{request}");
+    }
+
+    #[test]
+    fn logout_without_an_account_label_omits_the_field() {
+        let (identity, handle) = capture_request(&http_ok(r#"{"ok":true}"#));
+        let result = logout(&identity, "openai", None);
+        let request = handle.join().expect("server thread");
+        assert_eq!(result, Ok(()));
+        assert!(!request.contains("account"), "{request}");
+    }
+
+    #[test]
+    fn logout_surfaces_the_daemon_error_text() {
+        assert_eq!(
+            super::parse_logout(404, r#"{"ok":false,"error":"unknown OAuth provider \"x\""}"#),
+            Err("unknown OAuth provider \"x\"".to_string())
+        );
     }
 }

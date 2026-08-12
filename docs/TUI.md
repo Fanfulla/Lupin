@@ -61,9 +61,23 @@ fetches the hosted-provider catalogue from `GET /v1/lupin/providers`.
    and local token. The TUI refreshes into the normal dashboard without losing
    the connection.
 
-The native screen lists hosted providers only. Ollama, LM Studio, llama.cpp
-and ds4 discovery stays in `lupin init`, as do multi-account labels and the
-CLI-only save-anyway escape hatch.
+Since ADR-51 the screen is the whole setup surface, hosted and local alike:
+
+- `local` rows (Ollama, LM Studio, llama.cpp, ds4) run the live discovery
+  through `POST /v1/lupin/discover-local`: every chat model is listed with its
+  window (a `max` suffix when the number is only the declared maximum), a
+  "no tools" warning and a "context too small" verdict. Pick the main model,
+  then the light one (enter reuses the main); the vision and long-context
+  routes are offered only when the discovery justifies them, default no. A
+  server that is down answers with its start command and a retry key.
+- `API key` rows offer the economy preset when the catalogue row carries one,
+  and a failed verification shows the provider's error with an explicit
+  "save anyway" choice (default no): nothing is stored without it.
+- `OAuth` rows offer the official-CLI credential import when the row says one
+  exists, and take an optional account label (`[A-Za-z0-9._-]{1,32}`) so a
+  second account of the same provider gets its own profile (§4nonies).
+- A failover offer appears after any setup when at least one other profile
+  exists (default none).
 
 ## The screen, panel by panel
 
@@ -195,14 +209,14 @@ The TUI reads the same paths as the Node side; nothing is configured separately.
 | Not a terminal (piped) | bare `lupin` prints the text status, never a repainting screen in a pipe |
 | Daemon down | the header says `daemon DOWN`, health and "serving now" show as unknown, the screen keeps working |
 | No config, TTY and sidecar available | bare `lupin` starts the bootstrap daemon and opens add-provider |
-| No config without a TTY or sidecar | the text fallback says to run `lupin init`; no repainting UI is attempted |
+| No config without a TTY or sidecar | the text fallback points at the control API (README §Headless setup); no repainting UI is attempted |
 | Direct `lupin-tui` without config or bootstrap identity | exits honestly because it has no authenticated daemon identity |
 
 ## Troubleshooting
 
 - **`lupin` does not open the TUI**: the sidecar is not on the PATH or stdout is not a terminal. Check `lupin-tui --version`; if it errors, the binary is not reachable. The text fallback is the intended behaviour, not a failure.
 - **Build fails with `linker link.exe not found` or `cannot open input file 'kernel32.lib'` (Windows)**: the MSVC Build Tools or the Windows SDK are missing. Install them, then build with `build-msvc.bat --release`.
-- **An API key is rejected**: the masked field stays retryable and nothing is saved. Check the provider account, key scope and endpoint, then retry or use `lupin init` for the CLI save-anyway prompt.
+- **An API key is rejected**: the masked field stays retryable and nothing is saved unless you take the explicit save-anyway choice the error screen offers. Check the provider account, key scope and endpoint first.
 - **The OAuth browser does not open**: copy the URL displayed by the TUI into a browser. The login job keeps polling in the terminal.
 - **`daemon not answering: restart with \`lupin\`` during onboarding**: exit and run bare `lupin` again. There is no configured session for `lupin run -- claude` to repair yet.
 - **A switch does not move the active profile**: the daemon is down (the control API is unreachable) or returned an error. The talking line says which of the two it was; start the daemon with `lupin run -- claude`.
