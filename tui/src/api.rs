@@ -206,10 +206,8 @@ pub fn poll_login(identity: &BootstrapIdentity, job: &str) -> Result<LoginPoll, 
 
 /// The optional fields `setup-key` grows beyond `{ providerId, key }`.
 #[derive(Debug, Clone, Default)]
-pub struct SetupKeyOptions<'a> {
+pub struct SetupKeyOptions {
     pub economy: bool,
-    /// An existing profile the new one fails over to.
-    pub failover: Option<&'a str>,
     /// Retry after a failed connectivity test: store anyway.
     pub save_anyway: bool,
 }
@@ -233,9 +231,6 @@ pub fn setup_key(
     let mut body = serde_json::json!({ "providerId": provider_id, "key": key });
     if opts.economy {
         body["economy"] = serde_json::json!(true);
-    }
-    if let Some(f) = opts.failover {
-        body["failover"] = serde_json::json!(f);
     }
     if opts.save_anyway {
         body["saveAnyway"] = serde_json::json!(true);
@@ -304,7 +299,6 @@ pub struct SetupLocalRequest<'a> {
     /// Offered only for models that declare vision and differ from `main`.
     pub vision: Option<&'a str>,
     pub long_context: bool,
-    pub failover: Option<&'a str>,
 }
 
 pub fn setup_local(
@@ -322,9 +316,6 @@ pub fn setup_local(
     }
     if req.long_context {
         body["longContext"] = serde_json::json!(true);
-    }
-    if let Some(f) = req.failover {
-        body["failover"] = serde_json::json!(f);
     }
     // setup-local re-runs the live discovery server-side before writing (a
     // stale screen must not persist a model the server no longer serves), so
@@ -360,6 +351,27 @@ pub fn logout(
     if let Some(a) = account {
         body["account"] = serde_json::json!(a);
     }
+    let res = control_client()?
+        .post(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", identity.local_token),
+        )
+        .json(&body)
+        .send()
+        .map_err(|_| daemon_not_answering())?;
+    let status = res.status().as_u16();
+    let body = res.text().unwrap_or_default();
+    parse_logout(status, &body)
+}
+
+/// Sets one profile's failover on its own route: the TUI asks AFTER a setup
+/// succeeded (the answer follows the verdict), so the write cannot ride the
+/// setup body. The setup routes still take `failover` for headless one-call
+/// setups; this surface never sends it there.
+pub fn set_failover(identity: &BootstrapIdentity, profile: &str, failover: &str) -> Result<(), String> {
+    let url = format!("http://127.0.0.1:{}/v1/lupin/failover", identity.port);
+    let body = serde_json::json!({ "profile": profile, "failover": failover });
     let res = control_client()?
         .post(url)
         .header(
@@ -663,8 +675,8 @@ pub fn switch_profile(snap: &Snapshot, name: &str) -> Result<(), String> {
 mod tests {
     use super::{
         discover_local, logout, parse_discover_local, parse_login_poll, parse_login_start,
-        parse_providers, parse_setup_key, parse_setup_local, setup_key, setup_local, slots_body,
-        start_login, AuthKind, Health, LoginStatus, SetupKeyOptions, SetupLocalRequest,
+        parse_providers, parse_setup_key, parse_setup_local, set_failover, setup_key, setup_local,
+        slots_body, start_login, AuthKind, Health, LoginStatus, SetupKeyOptions, SetupLocalRequest,
     };
     use crate::config::BootstrapIdentity;
     use std::io::{Read, Write};
@@ -890,19 +902,30 @@ mod tests {
     /// The wire shape matters: these fields are camelCase on the daemon side,
     /// and a mismatched key would silently fail to reach it.
     #[test]
-    fn setup_key_sends_economy_failover_and_save_anyway_only_when_set() {
+    fn setup_key_sends_economy_and_save_anyway_only_when_set() {
         let (identity, handle) = capture_request(&http_ok(r#"{"ok":true}"#));
         let opts = SetupKeyOptions {
             economy: true,
-            failover: Some("kimi-sub"),
             save_anyway: true,
         };
         let result = setup_key(&identity, "openai", "sk-secret", &opts);
         let request = handle.join().expect("server thread");
         assert_eq!(result, Ok(()));
         assert!(request.contains(r#""economy":true"#), "{request}");
-        assert!(request.contains(r#""failover":"kimi-sub""#), "{request}");
         assert!(request.contains(r#""saveAnyway":true"#), "{request}");
+    }
+
+    // The failover travels on its own route since the offer moved AFTER the
+    // verdict: the setup body no longer carries it from the TUI.
+    #[test]
+    fn set_failover_names_the_profile_and_the_target() {
+        let (identity, handle) = capture_request(&http_ok(r#"{"ok":true}"#));
+        let result = set_failover(&identity, "gpt", "kimi-sub");
+        let request = handle.join().expect("server thread");
+        assert_eq!(result, Ok(()));
+        assert!(request.contains("/v1/lupin/failover"), "{request}");
+        assert!(request.contains(r#""profile":"gpt""#), "{request}");
+        assert!(request.contains(r#""failover":"kimi-sub""#), "{request}");
     }
 
     #[test]
@@ -912,7 +935,6 @@ mod tests {
         let request = handle.join().expect("server thread");
         assert_eq!(result, Ok(()));
         assert!(!request.contains("economy"), "{request}");
-        assert!(!request.contains("failover"), "{request}");
         assert!(!request.contains("saveAnyway"), "{request}");
     }
 
@@ -1011,7 +1033,6 @@ mod tests {
             light: "small-model",
             vision: Some("vision-model"),
             long_context: true,
-            failover: Some("kimi-sub"),
         };
         let result = setup_local(&identity, &req);
         let request = handle.join().expect("server thread");
@@ -1021,11 +1042,10 @@ mod tests {
         assert!(request.contains(r#""light":"small-model""#), "{request}");
         assert!(request.contains(r#""vision":"vision-model""#), "{request}");
         assert!(request.contains(r#""longContext":true"#), "{request}");
-        assert!(request.contains(r#""failover":"kimi-sub""#), "{request}");
     }
 
     #[test]
-    fn setup_local_omits_vision_long_context_and_failover_when_unset() {
+    fn setup_local_omits_vision_and_long_context_when_unset() {
         let (identity, handle) = capture_request(&http_ok(r#"{"ok":true}"#));
         let req = SetupLocalRequest {
             provider_id: "ollama",
@@ -1033,7 +1053,6 @@ mod tests {
             light: "big-model",
             vision: None,
             long_context: false,
-            failover: None,
         };
         let result = setup_local(&identity, &req);
         let request = handle.join().expect("server thread");

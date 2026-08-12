@@ -585,6 +585,26 @@ describe('POST /v1/lupin/slots', () => {
   });
 });
 
+describe('POST /v1/lupin/failover', () => {
+  const post = (body: unknown) =>
+    appWithControl().request('/v1/lupin/failover', { method: 'POST', headers: jsonAuth, body: JSON.stringify(body) });
+
+  it('sets and clears one profile failover without touching the target', async () => {
+    expect((await post({ profile: 'a', failover: 'b' })).status).toBe(200);
+    expect(loadConfig().profiles['a']?.failover).toBe('b');
+    expect(loadConfig().profiles['b']?.failover).toBeUndefined();
+    expect((await post({ profile: 'a', failover: null })).status).toBe(200);
+    expect(loadConfig().profiles['a']?.failover).toBeUndefined();
+  });
+
+  it('refuses unknown names and a self-reference', async () => {
+    expect((await post({ profile: 'nope', failover: 'a' })).status).toBe(404);
+    expect((await post({ profile: 'a', failover: 'nope' })).status).toBe(404);
+    expect((await post({ profile: 'a', failover: 'a' })).status).toBe(400);
+    expect(loadConfig().profiles['a']?.failover).toBeUndefined();
+  });
+});
+
 describe('POST /v1/lupin/logout', () => {
   it('deletes stored OAuth tokens', async () => {
     const { setOAuthTokens, getOAuthTokens } = await import('../src/config/credentials.js');

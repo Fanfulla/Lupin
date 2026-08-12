@@ -356,6 +356,47 @@ export function registerControlRoutes(app: Hono, bootstrapIdentity: BootstrapIde
     }
   });
 
+  // Set or clear ONE profile's failover. The setup routes accept `failover`
+  // in-body so a headless setup stays one call; the TUI asks AFTER the setup
+  // succeeded (the answer should follow the verdict, not precede it), and this
+  // is the write that later question lands on. Absent or null clears.
+  app.post('/v1/lupin/failover', async (c) => {
+    const denied = guard(c);
+    if (denied !== undefined) return denied;
+    let body: { profile?: unknown; failover?: unknown };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ ok: false, error: 'expected a JSON body { profile, failover? }' }, 400);
+    }
+    if (typeof body.profile !== 'string' || body.profile === '') {
+      return c.json({ ok: false, error: 'expected a JSON body { profile, failover? }' }, 400);
+    }
+    if (body.failover !== undefined && body.failover !== null && (typeof body.failover !== 'string' || body.failover === '')) {
+      return c.json({ ok: false, error: '"failover" must be a profile name, or null to clear' }, 400);
+    }
+    if (body.failover === body.profile) {
+      return c.json({ ok: false, error: 'a profile cannot fail over to itself' }, 400);
+    }
+    try {
+      const config = loadConfig();
+      const profile = config.profiles[body.profile];
+      if (profile === undefined) return c.json({ ok: false, error: `unknown profile "${body.profile}"` }, 404);
+      if (typeof body.failover === 'string') {
+        if (!(body.failover in config.profiles)) {
+          return c.json({ ok: false, error: `unknown failover profile "${body.failover}"` }, 404);
+        }
+        profile.failover = body.failover;
+      } else {
+        delete profile.failover;
+      }
+      saveConfig(config);
+      return c.json({ ok: true });
+    } catch (e) {
+      return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  });
+
   // The automatic-switch order (ADR-34): the failover chain, set atomically.
   // Each named profile fails over to the next; the LAST one's failover is
   // removed (a chain has an end, not a loop); profiles outside the list keep

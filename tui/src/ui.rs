@@ -513,12 +513,12 @@ fn render_add_provider(f: &mut Frame, mode: &AddProviderMode, area: Rect, config
             ..
         } => {
             let mut lines = vec![Line::from(Span::styled(
-                "Failover (optional): retry once through another profile on a rate limit or overload",
+                "Saved. Failover (optional): retry once through another profile on a rate limit or overload",
                 bold(),
             ))];
             lines.extend(pick_list_lines("no failover", candidates, *pick_cursor));
             lines.push(Line::from(Span::styled(
-                " arrows/j/k select   enter pick (default: none)   esc cancel",
+                " arrows/j/k select   enter pick (default: none)   esc = none, the profile stays saved",
                 dim(),
             )));
             lines

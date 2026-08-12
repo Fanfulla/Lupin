@@ -92,7 +92,6 @@ pub(crate) enum AddProviderMode {
         cursor: usize,
         key: String,
         economy: bool,
-        failover: Option<String>,
         message: String,
     },
     // Local rows: live discovery, then main/light model picks, then the two
@@ -141,10 +140,12 @@ pub(crate) enum AddProviderMode {
         light: String,
         vision: Option<String>,
     },
-    // Shared by the key and local flows: offered only when another profile
-    // already exists, default none (row 0 of the rendered list).
+    // Shared by the key and local flows, AFTER the setup succeeded: the answer
+    // should follow the verdict, not precede it (a failover named for a key
+    // the provider then rejected was a wasted question). Offered only when
+    // another profile exists, default none (row 0 of the rendered list).
     FailoverOffer {
-        pending: PendingSubmit,
+        profile_id: String,
         providers: Vec<api::ProviderRow>,
         cursor: usize,
         candidates: Vec<String>,
@@ -162,22 +163,6 @@ pub(crate) enum AddProviderMode {
 pub(crate) enum ModelPickTarget {
     Main,
     Light,
-}
-
-/// What the shared failover offer resumes into once a choice is made.
-pub(crate) enum PendingSubmit {
-    Key {
-        provider: api::ProviderRow,
-        key: String,
-        economy: bool,
-    },
-    Local {
-        provider: api::ProviderRow,
-        main: String,
-        light: String,
-        vision: Option<String>,
-        long_context: bool,
-    },
 }
 
 fn main() -> io::Result<()> {
@@ -868,6 +853,31 @@ fn finish_add_provider(
     }
 }
 
+/// A setup that just succeeded: the failover question comes NOW, after the
+/// verdict, and lands on its own control write. When no other profile exists
+/// there is nothing to ask and the shared finish takes over directly.
+fn after_submit_success(
+    profile_id: String,
+    providers: Vec<api::ProviderRow>,
+    cursor: usize,
+    cfg_path: &std::path::Path,
+    bootstrap_identity: Option<&config::BootstrapIdentity>,
+    message: &mut String,
+) -> AddProviderAction {
+    let refreshed = api::snapshot(cfg_path, bootstrap_identity);
+    let candidates = failover_candidates(&refreshed, &profile_id);
+    if candidates.is_empty() {
+        return finish_add_provider(cfg_path, bootstrap_identity, message);
+    }
+    AddProviderAction::Stay(AddProviderMode::FailoverOffer {
+        profile_id,
+        providers,
+        cursor,
+        candidates,
+        pick_cursor: 0,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn submit_key(
     provider: api::ProviderRow,
@@ -875,7 +885,6 @@ fn submit_key(
     cursor: usize,
     key: String,
     economy: bool,
-    failover: Option<String>,
     save_anyway: bool,
     snap: &api::Snapshot,
     bootstrap_identity: Option<&config::BootstrapIdentity>,
@@ -892,11 +901,10 @@ fn submit_key(
     };
     let opts = api::SetupKeyOptions {
         economy,
-        failover: failover.as_deref(),
         save_anyway,
     };
     match api::setup_key(&identity, &provider.id, &key, &opts) {
-        Ok(()) => finish_add_provider(cfg_path, bootstrap_identity, message),
+        Ok(()) => after_submit_success(provider.id, providers, cursor, cfg_path, bootstrap_identity, message),
         Err(e) if e.can_save_anyway && !save_anyway => {
             let shown = redact_key_from_error(&onboarding_error(e.message), &key);
             AddProviderAction::Stay(AddProviderMode::SaveAnywayConfirm {
@@ -905,7 +913,6 @@ fn submit_key(
                 cursor,
                 key,
                 economy,
-                failover,
                 message: shown,
             })
         }
@@ -921,50 +928,6 @@ fn submit_key(
     }
 }
 
-/// After the key and (when offered) the economy choice: the shared failover
-/// offer when another profile exists, otherwise straight to submission.
-#[allow(clippy::too_many_arguments)]
-fn after_key_details(
-    provider: api::ProviderRow,
-    providers: Vec<api::ProviderRow>,
-    cursor: usize,
-    key: String,
-    economy: bool,
-    snap: &api::Snapshot,
-    bootstrap_identity: Option<&config::BootstrapIdentity>,
-    cfg_path: &std::path::Path,
-    message: &mut String,
-) -> AddProviderAction {
-    let candidates = failover_candidates(snap, &provider.id);
-    if candidates.is_empty() {
-        submit_key(
-            provider,
-            providers,
-            cursor,
-            key,
-            economy,
-            None,
-            false,
-            snap,
-            bootstrap_identity,
-            cfg_path,
-            message,
-        )
-    } else {
-        AddProviderAction::Stay(AddProviderMode::FailoverOffer {
-            pending: PendingSubmit::Key {
-                provider,
-                key,
-                economy,
-            },
-            providers,
-            cursor,
-            candidates,
-            pick_cursor: 0,
-        })
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn submit_local(
     provider: api::ProviderRow,
@@ -974,7 +937,6 @@ fn submit_local(
     light: String,
     vision: Option<String>,
     long_context: bool,
-    failover: Option<String>,
     snap: &api::Snapshot,
     bootstrap_identity: Option<&config::BootstrapIdentity>,
     cfg_path: &std::path::Path,
@@ -994,66 +956,15 @@ fn submit_local(
         light: &light,
         vision: vision.as_deref(),
         long_context,
-        failover: failover.as_deref(),
     };
     match api::setup_local(&identity, &req) {
-        Ok(()) => finish_add_provider(cfg_path, bootstrap_identity, message),
+        Ok(()) => after_submit_success(provider.id, providers, cursor, cfg_path, bootstrap_identity, message),
         Err(e) => AddProviderAction::Stay(AddProviderMode::Error {
             message: onboarding_error(e.message),
             providers,
             cursor,
             return_to_list: true,
         }),
-    }
-}
-
-/// After the two opt-in local offers (vision, long context): the shared
-/// failover offer when another profile exists, otherwise straight to
-/// submission. Same fork as `after_key_details`.
-#[allow(clippy::too_many_arguments)]
-fn after_local_details(
-    provider: api::ProviderRow,
-    providers: Vec<api::ProviderRow>,
-    cursor: usize,
-    main: String,
-    light: String,
-    vision: Option<String>,
-    long_context: bool,
-    snap: &api::Snapshot,
-    bootstrap_identity: Option<&config::BootstrapIdentity>,
-    cfg_path: &std::path::Path,
-    message: &mut String,
-) -> AddProviderAction {
-    let candidates = failover_candidates(snap, &provider.id);
-    if candidates.is_empty() {
-        submit_local(
-            provider,
-            providers,
-            cursor,
-            main,
-            light,
-            vision,
-            long_context,
-            None,
-            snap,
-            bootstrap_identity,
-            cfg_path,
-            message,
-        )
-    } else {
-        AddProviderAction::Stay(AddProviderMode::FailoverOffer {
-            pending: PendingSubmit::Local {
-                provider,
-                main,
-                light,
-                vision,
-                long_context,
-            },
-            providers,
-            cursor,
-            candidates,
-            pick_cursor: 0,
-        })
     }
 }
 
@@ -1127,7 +1038,7 @@ fn after_vision(
             vision,
         })
     } else {
-        after_local_details(
+        submit_local(
             provider,
             providers,
             cursor,
@@ -1513,11 +1424,12 @@ fn handle_add_provider_key(
                         economy: false,
                     })
                 } else {
-                    after_key_details(
+                    submit_key(
                         provider,
                         providers,
                         cursor,
                         value,
+                        false,
                         false,
                         snap,
                         bootstrap_identity,
@@ -1558,12 +1470,13 @@ fn handle_add_provider_key(
                 key: entered_key,
                 economy: true,
             }),
-            KeyCode::Enter => after_key_details(
+            KeyCode::Enter => submit_key(
                 provider,
                 providers,
                 cursor,
                 entered_key,
                 economy,
+                false,
                 snap,
                 bootstrap_identity,
                 cfg_path,
@@ -1583,7 +1496,6 @@ fn handle_add_provider_key(
             cursor,
             key: entered_key,
             economy,
-            failover,
             message: shown,
         } => match key {
             KeyCode::Char('y') => submit_key(
@@ -1592,7 +1504,6 @@ fn handle_add_provider_key(
                 cursor,
                 entered_key,
                 economy,
-                failover,
                 true,
                 snap,
                 bootstrap_identity,
@@ -1609,7 +1520,6 @@ fn handle_add_provider_key(
                 cursor,
                 key: entered_key,
                 economy,
-                failover,
                 message: shown,
             }),
         },
@@ -1820,7 +1730,7 @@ fn handle_add_provider_key(
                 *message = "local setup cancelled".to_string();
                 AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
             }
-            KeyCode::Char('y') => after_local_details(
+            KeyCode::Char('y') => submit_local(
                 provider,
                 providers,
                 cursor,
@@ -1833,7 +1743,7 @@ fn handle_add_provider_key(
                 cfg_path,
                 message,
             ),
-            KeyCode::Enter | KeyCode::Char('n') => after_local_details(
+            KeyCode::Enter | KeyCode::Char('n') => submit_local(
                 provider,
                 providers,
                 cursor,
@@ -1856,20 +1766,19 @@ fn handle_add_provider_key(
             }),
         },
         AddProviderMode::FailoverOffer {
-            pending,
+            profile_id,
             providers,
             cursor,
             candidates,
             mut pick_cursor,
         } => match key {
-            KeyCode::Esc => {
-                *message = "provider setup cancelled".to_string();
-                AddProviderAction::Stay(AddProviderMode::List { providers, cursor })
-            }
+            // The profile is already saved at this point: leaving the offer
+            // means "no failover", never an undo, and the words say so.
+            KeyCode::Esc => finish_add_provider(cfg_path, bootstrap_identity, message),
             KeyCode::Up | KeyCode::Char('k') => {
                 pick_cursor = pick_cursor.saturating_sub(1);
                 AddProviderAction::Stay(AddProviderMode::FailoverOffer {
-                    pending,
+                    profile_id,
                     providers,
                     cursor,
                     candidates,
@@ -1881,7 +1790,7 @@ fn handle_add_provider_key(
                     pick_cursor += 1;
                 }
                 AddProviderAction::Stay(AddProviderMode::FailoverOffer {
-                    pending,
+                    profile_id,
                     providers,
                     cursor,
                     candidates,
@@ -1889,53 +1798,39 @@ fn handle_add_provider_key(
                 })
             }
             KeyCode::Enter => {
-                let failover = if pick_cursor == 0 {
+                let Some(target) = (if pick_cursor == 0 {
                     None
                 } else {
                     candidates.get(pick_cursor - 1).cloned()
+                }) else {
+                    return finish_add_provider(cfg_path, bootstrap_identity, message);
                 };
-                match pending {
-                    PendingSubmit::Key {
-                        provider,
-                        key: entered_key,
-                        economy,
-                    } => submit_key(
-                        provider,
+                let Some(identity) = onboarding_identity(snap, bootstrap_identity) else {
+                    return AddProviderAction::Stay(AddProviderMode::Error {
+                        message: format!("\"{profile_id}\" is saved, but the daemon stopped answering before the failover could be set"),
                         providers,
                         cursor,
-                        entered_key,
-                        economy,
-                        failover,
-                        false,
-                        snap,
-                        bootstrap_identity,
-                        cfg_path,
-                        message,
-                    ),
-                    PendingSubmit::Local {
-                        provider,
-                        main,
-                        light,
-                        vision,
-                        long_context,
-                    } => submit_local(
-                        provider,
+                        return_to_list: true,
+                    });
+                };
+                match api::set_failover(&identity, &profile_id, &target) {
+                    Ok(()) => {
+                        let done = finish_add_provider(cfg_path, bootstrap_identity, message);
+                        *message = format!("provider added, failover -> {target}");
+                        done
+                    }
+                    // The setup itself succeeded: the error must not read as
+                    // if the profile was lost with it.
+                    Err(e) => AddProviderAction::Stay(AddProviderMode::Error {
+                        message: format!("\"{profile_id}\" is saved, but setting the failover failed: {e}"),
                         providers,
                         cursor,
-                        main,
-                        light,
-                        vision,
-                        long_context,
-                        failover,
-                        snap,
-                        bootstrap_identity,
-                        cfg_path,
-                        message,
-                    ),
+                        return_to_list: true,
+                    }),
                 }
             }
             _ => AddProviderAction::Stay(AddProviderMode::FailoverOffer {
-                pending,
+                profile_id,
                 providers,
                 cursor,
                 candidates,
@@ -2142,7 +2037,7 @@ mod tests {
         agent_rows, agents_table, clamp_selected, clear_cancelled_key, handle_add_provider_key,
         handle_slots_key, onboarding_error, order_message, promote_success_to_dashboard, push_pick,
         redact_key_from_error, submit_key, AddProviderAction, AddProviderMode, ModelPickTarget,
-        PendingSubmit, SlotsAction,
+        SlotsAction,
     };
     use crate::api::{AuthKind, ProviderRow, Snapshot};
     use crate::ui;
@@ -2306,7 +2201,6 @@ mod tests {
                 cursor: 0,
                 key: "secret".to_string(),
                 economy: false,
-                failover: None,
                 message: "the provider does not answer".to_string(),
             },
             AddProviderMode::LocalDiscoverLoading {
@@ -2349,11 +2243,7 @@ mod tests {
                 vision: None,
             },
             AddProviderMode::FailoverOffer {
-                pending: PendingSubmit::Key {
-                    provider: provider(AuthKind::Key),
-                    key: "secret".to_string(),
-                    economy: false,
-                },
+                profile_id: "catalogue-key".to_string(),
                 providers: Vec::new(),
                 cursor: 0,
                 candidates: vec!["other".to_string()],
@@ -2571,7 +2461,6 @@ mod tests {
             0,
             "secret-value".to_string(),
             false,
-            None,
             false,
             &empty_snapshot(),
             None,
