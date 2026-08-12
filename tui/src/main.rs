@@ -191,12 +191,12 @@ fn main() -> io::Result<()> {
         Some(p) => p,
         None if bootstrap_identity.is_some() => std::path::PathBuf::new(),
         None => {
-            eprintln!("no config yet: run `lupin init` first");
+            eprintln!("no config yet: run `lupin` to add a provider from the hub");
             std::process::exit(1);
         }
     };
     if config::load(&cfg_path).is_err() && bootstrap_identity.is_none() {
-        eprintln!("no config yet: run `lupin init` first");
+        eprintln!("no config yet: run `lupin` to add a provider from the hub");
         std::process::exit(1);
     }
 
@@ -250,6 +250,9 @@ fn run(
     // routes, None otherwise. Applied atomically through the control API on
     // Enter, thrown away on Esc.
     let mut agents_edit: Option<ui::AgentsEdit> = None;
+    // Slots editor (`m`): Some(edit) while the three slots of the selected
+    // profile are being aimed, None otherwise. Applied on the last Enter.
+    let mut slots_edit: Option<ui::SlotsEdit> = None;
     let mut add_provider = needs_provider(&snap).then_some(AddProviderMode::Loading);
     loop {
         if last.elapsed() >= REFRESH {
@@ -287,6 +290,7 @@ fn run(
                 job.as_ref(),
                 palette,
                 agents_edit.as_ref(),
+                slots_edit.as_ref(),
                 add_provider.as_ref(),
             )
         })?;
@@ -476,8 +480,47 @@ fn run(
                     }
                     continue;
                 }
+                // The slots editor swallows its keys the same way: letters here
+                // spell a model name, they never fall through to hotkeys.
+                if slots_edit.is_some() {
+                    let action = handle_slots_key(
+                        slots_edit.as_mut().expect("checked just above"),
+                        key.code,
+                    );
+                    match action {
+                        SlotsAction::Stay => {}
+                        SlotsAction::Cancel(reason) => {
+                            slots_edit = None;
+                            message = reason;
+                        }
+                        SlotsAction::Apply(aims) => {
+                            let edit = slots_edit.take().expect("checked just above");
+                            let said: Vec<String> =
+                                aims.iter().map(|(s, m)| format!("{s}={m}")).collect();
+                            message = match api::set_slots(&snap, &edit.profile, &aims) {
+                                Ok(()) => {
+                                    format!("{}: slots aimed ({})", edit.profile, said.join(", "))
+                                }
+                                Err(e) => format!("aim slots failed: {e}"),
+                            };
+                            snap = api::snapshot(cfg_path, bootstrap_identity);
+                            last = Instant::now();
+                        }
+                    }
+                    continue;
+                }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('m') => match slots_edit_for(&snap, selected) {
+                        Some(edit) => {
+                            message = format!(
+                                "aim slots for {}: enter advances, the last enter applies, esc cancels",
+                                edit.profile
+                            );
+                            slots_edit = Some(edit);
+                        }
+                        None => message = "no profile selected".to_string(),
+                    },
                     KeyCode::Char('d') => {
                         let mut args = vec!["doctor".to_string()];
                         if let Some(name) = snap.profile_names.get(selected) {
@@ -660,6 +703,84 @@ fn start_provider_login(
             return_to_list: true,
         },
     }
+}
+
+/// What one key does to the slots editor. Pure, so the whole sequence is
+/// testable without a terminal (the order/agents rule).
+pub(crate) enum SlotsAction {
+    Stay,
+    Cancel(String),
+    Apply(Vec<(&'static str, String)>),
+}
+
+/// Enter advances; on the last field it applies ONLY what changed, and
+/// changing nothing is a cancel with words, never a silent no-op write.
+pub(crate) fn handle_slots_key(edit: &mut ui::SlotsEdit, key: KeyCode) -> SlotsAction {
+    match key {
+        KeyCode::Esc => SlotsAction::Cancel("aim cancelled".to_string()),
+        KeyCode::Backspace => {
+            edit.values[edit.field].pop();
+            SlotsAction::Stay
+        }
+        KeyCode::Up => {
+            edit.field = edit.field.saturating_sub(1);
+            SlotsAction::Stay
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            if edit.field + 1 < ui::SLOT_NAMES.len() {
+                edit.field += 1;
+            }
+            SlotsAction::Stay
+        }
+        KeyCode::Enter => {
+            if edit.field + 1 < ui::SLOT_NAMES.len() {
+                edit.field += 1;
+                return SlotsAction::Stay;
+            }
+            let aims: Vec<(&'static str, String)> = ui::SLOT_NAMES
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| edit.values[*i] != edit.original[*i] && !edit.values[*i].is_empty())
+                .map(|(i, name)| (*name, edit.values[i].clone()))
+                .collect();
+            if aims.is_empty() {
+                SlotsAction::Cancel("nothing changed".to_string())
+            } else {
+                SlotsAction::Apply(aims)
+            }
+        }
+        KeyCode::Char(c) => {
+            edit.values[edit.field].push(c);
+            SlotsAction::Stay
+        }
+        _ => SlotsAction::Stay,
+    }
+}
+
+/// The editor for the selected profile row, prefilled with the current slot
+/// labels. A delegated slot shows its `->profile` label: typing over it
+/// replaces the delegation with a model string, leaving it keeps it (the
+/// unchanged label never matches a model name, so nothing is sent for it).
+fn slots_edit_for(snap: &api::Snapshot, selected: usize) -> Option<ui::SlotsEdit> {
+    let name = snap.profile_names.get(selected)?;
+    let profile = snap.config.as_ref()?.profiles.get(name)?;
+    let current: Vec<String> = ui::SLOT_NAMES
+        .iter()
+        .map(|slot| {
+            profile
+                .slots
+                .get(*slot)
+                .map(config::slot_label)
+                .unwrap_or_default()
+        })
+        .collect();
+    let values: [String; 3] = [current[0].clone(), current[1].clone(), current[2].clone()];
+    Some(ui::SlotsEdit {
+        profile: name.clone(),
+        original: values.clone(),
+        values,
+        field: 0,
+    })
 }
 
 fn clear_cancelled_key(value: &mut String) {
@@ -2019,11 +2140,12 @@ fn clamp_selected(selected: &mut usize, len: usize) {
 mod tests {
     use super::{
         agent_rows, agents_table, clamp_selected, clear_cancelled_key, handle_add_provider_key,
-        onboarding_error, order_message, promote_success_to_dashboard, push_pick,
+        handle_slots_key, onboarding_error, order_message, promote_success_to_dashboard, push_pick,
         redact_key_from_error, submit_key, AddProviderAction, AddProviderMode, ModelPickTarget,
-        PendingSubmit,
+        PendingSubmit, SlotsAction,
     };
     use crate::api::{AuthKind, ProviderRow, Snapshot};
+    use crate::ui;
     use crossterm::event::{KeyCode, KeyModifiers};
 
     fn empty_snapshot() -> Snapshot {
@@ -2606,5 +2728,62 @@ mod tests {
         let mut s = 4;
         clamp_selected(&mut s, 0);
         assert_eq!(s, 0, "empty list: reset to 0");
+    }
+
+    fn slots_edit() -> ui::SlotsEdit {
+        ui::SlotsEdit {
+            profile: "p".to_string(),
+            values: ["a".to_string(), "b".to_string(), "c".to_string()],
+            original: ["a".to_string(), "b".to_string(), "c".to_string()],
+            field: 0,
+        }
+    }
+
+    #[test]
+    fn slots_enter_advances_and_the_last_enter_with_no_change_cancels_with_words() {
+        let mut edit = slots_edit();
+        assert!(matches!(handle_slots_key(&mut edit, KeyCode::Enter), SlotsAction::Stay));
+        assert!(matches!(handle_slots_key(&mut edit, KeyCode::Enter), SlotsAction::Stay));
+        assert_eq!(edit.field, 2);
+        match handle_slots_key(&mut edit, KeyCode::Enter) {
+            SlotsAction::Cancel(reason) => assert_eq!(reason, "nothing changed"),
+            _ => panic!("expected a worded cancel"),
+        }
+    }
+
+    #[test]
+    fn slots_apply_names_only_what_changed() {
+        let mut edit = slots_edit();
+        // Retype the haiku slot: down twice, clear "c", type "z".
+        handle_slots_key(&mut edit, KeyCode::Down);
+        handle_slots_key(&mut edit, KeyCode::Down);
+        handle_slots_key(&mut edit, KeyCode::Backspace);
+        handle_slots_key(&mut edit, KeyCode::Char('z'));
+        match handle_slots_key(&mut edit, KeyCode::Enter) {
+            SlotsAction::Apply(aims) => assert_eq!(aims, vec![("haiku", "z".to_string())]),
+            _ => panic!("expected an apply"),
+        }
+    }
+
+    #[test]
+    fn slots_an_emptied_field_is_kept_not_sent() {
+        let mut edit = slots_edit();
+        handle_slots_key(&mut edit, KeyCode::Backspace); // opus becomes ""
+        handle_slots_key(&mut edit, KeyCode::Down);
+        handle_slots_key(&mut edit, KeyCode::Down);
+        match handle_slots_key(&mut edit, KeyCode::Enter) {
+            SlotsAction::Cancel(reason) => assert_eq!(reason, "nothing changed"),
+            _ => panic!("an empty value must never be sent as a model name"),
+        }
+    }
+
+    #[test]
+    fn slots_esc_cancels_from_any_field() {
+        let mut edit = slots_edit();
+        handle_slots_key(&mut edit, KeyCode::Down);
+        assert!(matches!(
+            handle_slots_key(&mut edit, KeyCode::Esc),
+            SlotsAction::Cancel(_)
+        ));
     }
 }

@@ -567,6 +567,24 @@ describe('POST /v1/lupin/login', () => {
   });
 });
 
+describe('POST /v1/lupin/slots', () => {
+  const aim = (body: unknown) =>
+    appWithControl().request('/v1/lupin/slots', { method: 'POST', headers: jsonAuth, body: JSON.stringify(body) });
+
+  it('writes the named slots as given and leaves the others alone', async () => {
+    const res = await aim({ profile: 'a', opus: 'big-model', haiku: 'small-model' });
+    expect(res.status).toBe(200);
+    expect(loadConfig().profiles['a']?.slots).toEqual({ opus: 'big-model', sonnet: 'm', haiku: 'small-model' });
+  });
+
+  it('refuses an unknown profile, an empty aim, and a non-string model', async () => {
+    expect((await aim({ profile: 'nope', opus: 'x' })).status).toBe(404);
+    expect((await aim({ profile: 'a' })).status).toBe(400);
+    expect((await aim({ profile: 'a', sonnet: '' })).status).toBe(400);
+    expect(loadConfig().profiles['a']?.slots).toEqual({ opus: 'm', sonnet: 'm', haiku: 'm' });
+  });
+});
+
 describe('POST /v1/lupin/logout', () => {
   it('deletes stored OAuth tokens', async () => {
     const { setOAuthTokens, getOAuthTokens } = await import('../src/config/credentials.js');

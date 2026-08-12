@@ -573,6 +573,40 @@ pub fn set_switch_order(snap: &Snapshot, order: &[String]) -> Result<(), String>
     }
 }
 
+/// The `POST /v1/lupin/slots` body: only the aimed slots are named, so the
+/// daemon leaves the others alone. Split out for the wire test.
+fn slots_body(profile: &str, aims: &[(&'static str, String)]) -> serde_json::Value {
+    let mut body = serde_json::json!({ "profile": profile });
+    for (slot, model) in aims {
+        body[*slot] = serde_json::json!(model);
+    }
+    body
+}
+
+/// Aim a profile's slots (SPEC-CLI section 1, the `use --opus` rule): the
+/// names travel as given and are never checked, and the screen says so too.
+pub fn set_slots(snap: &Snapshot, profile: &str, aims: &[(&'static str, String)]) -> Result<(), String> {
+    let Some(config) = &snap.config else {
+        return Err("no config".to_string());
+    };
+    let url = format!("http://127.0.0.1:{}/v1/lupin/slots", config.port);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(1500))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = client
+        .post(&url)
+        .header("authorization", format!("Bearer {}", config.local_token))
+        .json(&slots_body(profile, aims))
+        .send()
+        .map_err(|_| "daemon not answering (lupin run -- claude starts it)".to_string())?;
+    if res.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("daemon said HTTP {}", res.status().as_u16()))
+    }
+}
+
 /// Replace the agent-routes table (SPEC-PROVIDERS section 4decies): one atomic
 /// call, like the switch order. The daemon validates, writes the config and
 /// hot-reloads; the outcome comes back as words for the talking line.
@@ -629,8 +663,8 @@ pub fn switch_profile(snap: &Snapshot, name: &str) -> Result<(), String> {
 mod tests {
     use super::{
         discover_local, logout, parse_discover_local, parse_login_poll, parse_login_start,
-        parse_providers, parse_setup_key, parse_setup_local, setup_key, setup_local, start_login,
-        AuthKind, Health, LoginStatus, SetupKeyOptions, SetupLocalRequest,
+        parse_providers, parse_setup_key, parse_setup_local, setup_key, setup_local, slots_body,
+        start_login, AuthKind, Health, LoginStatus, SetupKeyOptions, SetupLocalRequest,
     };
     use crate::config::BootstrapIdentity;
     use std::io::{Read, Write};
@@ -1056,5 +1090,14 @@ mod tests {
             super::parse_logout(404, r#"{"ok":false,"error":"unknown OAuth provider \"x\""}"#),
             Err("unknown OAuth provider \"x\"".to_string())
         );
+    }
+
+    #[test]
+    fn slots_body_names_only_the_aimed_slots() {
+        let body = slots_body("kimi", &[("opus", "big".to_string()), ("haiku", "small".to_string())]);
+        assert_eq!(body["profile"], "kimi");
+        assert_eq!(body["opus"], "big");
+        assert_eq!(body["haiku"], "small");
+        assert!(body.get("sonnet").is_none());
     }
 }

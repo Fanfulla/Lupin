@@ -164,6 +164,20 @@ pub struct AgentsEdit {
     pub cursor: usize,
 }
 
+/// The slot order every surface agrees on (SPEC-CLI §1).
+pub const SLOT_NAMES: [&str; 3] = ["opus", "sonnet", "haiku"];
+
+/// Slots editor (`m` on a profile row): the three slots edited in sequence.
+/// Values start as the current labels (a delegated slot shows `->profile` and
+/// typing replaces it); only what changed is sent, and never checked (the
+/// `use --opus` rule).
+pub struct SlotsEdit {
+    pub profile: String,
+    pub values: [String; 3],
+    pub original: [String; 3],
+    pub field: usize,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
@@ -173,6 +187,7 @@ pub fn render(
     job: Option<&Job>,
     palette: bool,
     agents: Option<&AgentsEdit>,
+    slots: Option<&SlotsEdit>,
     add_provider: Option<&AddProviderMode>,
 ) {
     // The portrait is worth 15 rows only where 15 rows are spare. Below that the
@@ -222,12 +237,53 @@ pub fn render(
     if let Some(edit) = agents {
         render_agents(f, edit, f.area());
     }
+    if let Some(edit) = slots {
+        render_slots(f, edit, f.area());
+    }
     if let Some(mode) = add_provider {
-        render_add_provider(f, mode, f.area());
+        render_add_provider(f, mode, f.area(), &snap.profile_names);
     }
 }
 
-fn render_add_provider(f: &mut Frame, mode: &AddProviderMode, area: Rect) {
+/// The slots editor overlay: three fields, the active one highlighted, and the
+/// honest caveat that nothing local validates a model name.
+fn render_slots(f: &mut Frame, edit: &SlotsEdit, area: Rect) {
+    let area = centred(area, 66, 40);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(format!(" aim slots: {} ", edit.profile), bold()));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let mut lines: Vec<Line> = SLOT_NAMES
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let text = format!(" {:6} {}", name, edit.values[i]);
+            if i == edit.field {
+                Line::from(Span::styled(
+                    text,
+                    Style::default().add_modifier(Modifier::REVERSED),
+                ))
+            } else {
+                Line::from(text)
+            }
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " names are written as given and never checked: a wrong one fails in session",
+        dim(),
+    )));
+    lines.push(Line::from(Span::styled(
+        " type model   backspace edit   enter next/apply   up/down field   esc cancel",
+        dim(),
+    )));
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+fn render_add_provider(f: &mut Frame, mode: &AddProviderMode, area: Rect, configured: &[String]) {
     let area = centred(area, 66, 60);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -259,7 +315,15 @@ fn render_add_provider(f: &mut Frame, mode: &AddProviderMode, area: Rect) {
                     } else {
                         ""
                     };
-                    let text = format!(" {}  {auth}{economy}{import}", provider.description);
+                    // A row that already has a profile says so: setting it up
+                    // again replaces that profile, which must be a visible
+                    // choice rather than a surprise.
+                    let existing = if configured.contains(&provider.id) {
+                        "  configured"
+                    } else {
+                        ""
+                    };
+                    let text = format!(" {}  {auth}{existing}{economy}{import}", provider.description);
                     if index == *cursor {
                         Line::from(Span::styled(
                             text,
@@ -1028,7 +1092,7 @@ fn render_keys(f: &mut Frame, area: Rect, add_provider: Option<&AddProviderMode>
     }) {
         "  text input active   q types normally   ctrl-c quit"
     } else {
-        "  q quit   1-9/arrows+enter switch   d doctor   : commands   o order   a agents   p add provider   r refresh"
+        "  q quit   1-9/arrows+enter switch   d doctor   m models   : commands   o order   a agents   p add provider   r refresh"
     };
     f.render_widget(Paragraph::new(Line::from(Span::styled(text, dim()))), area);
 }
@@ -1056,7 +1120,7 @@ mod tests {
 
     fn screen_sel(snap: &Snapshot, message: &str, selected: usize) -> String {
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, snap, message, selected, None, false, None, None))
+        term.draw(|f| render(f, snap, message, selected, None, false, None, None, None))
             .expect("draw");
         term.backend()
             .buffer()
@@ -1086,7 +1150,7 @@ mod tests {
             profile_names: Vec::new(),
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, Some(mode)))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, Some(mode)))
             .expect("draw");
         term.backend()
             .buffer()
@@ -1101,6 +1165,72 @@ mod tests {
         let out = add_provider_screen(&AddProviderMode::Loading);
         assert!(out.contains("add provider"), "{out}");
         assert!(out.contains("loading"), "{out}");
+    }
+
+    #[test]
+    fn a_catalogue_row_that_already_has_a_profile_says_configured() {
+        let snap = Snapshot {
+            config: None,
+            health: None,
+            recent: Vec::new(),
+            profile_names: vec!["catalogue-b".to_string()],
+        };
+        let mode = AddProviderMode::List {
+            providers: vec![
+                provider("catalogue-a", "Catalogue Alpha", AuthKind::Oauth),
+                provider("catalogue-b", "Catalogue Beta", AuthKind::Key),
+            ],
+            cursor: 0,
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, Some(&mode)))
+            .expect("draw");
+        let out = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert_eq!(out.matches("configured").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn the_slots_editor_shows_the_three_slots_and_highlights_the_active_field() {
+        let snap = Snapshot {
+            config: None,
+            health: None,
+            recent: Vec::new(),
+            profile_names: Vec::new(),
+        };
+        let edit = SlotsEdit {
+            profile: "kimi".to_string(),
+            values: [
+                "kimi-k3".to_string(),
+                "kimi-k3".to_string(),
+                "kimi-k2.6".to_string(),
+            ],
+            original: [
+                "kimi-k3".to_string(),
+                "kimi-k3".to_string(),
+                "kimi-k2.6".to_string(),
+            ],
+            field: 1,
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, Some(&edit), None))
+            .expect("draw");
+        let out = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(out.contains("aim slots: kimi"), "{out}");
+        assert!(out.contains("opus"), "{out}");
+        assert!(out.contains("haiku"), "{out}");
+        assert!(out.contains("never checked"), "{out}");
     }
 
     #[test]
@@ -1204,7 +1334,7 @@ mod tests {
             cursor: 0,
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, Some(&edit), None))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, Some(&edit), None, None))
             .expect("draw");
         let out = term
             .backend()
@@ -1304,7 +1434,7 @@ mod tests {
             profile_names: vec!["kimi-sub".to_string()],
         };
         let mut term = Terminal::new(TestBackend::new(20, 4)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, None))
             .expect("draw on a cramped screen");
     }
 
@@ -1393,7 +1523,7 @@ mod tests {
     /// the cursor highlight, drawn on the selected row.
     fn any_reversed(snap: &Snapshot, selected: usize) -> bool {
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, snap, "ready", selected, None, false, None, None))
+        term.draw(|f| render(f, snap, "ready", selected, None, false, None, None, None))
             .expect("draw");
         term.backend()
             .buffer()
@@ -1464,7 +1594,7 @@ mod tests {
         // The reversed cell's vertical position changes with `selected`.
         let y_of = |selected: usize| {
             let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-            term.draw(|f| render(f, &snap, "ready", selected, None, false, None, None))
+            term.draw(|f| render(f, &snap, "ready", selected, None, false, None, None, None))
                 .expect("draw");
             let buf = term.backend().buffer();
             let width = buf.area().width as usize;

@@ -152,6 +152,7 @@ Each recent request can carry the routing truth inline, exactly like `lupin logs
 | `Enter` | switch the active profile to the row under the cursor |
 | `r` | refresh now, without waiting for the next tick |
 | `d` | run the doctor for the highlighted profile and stream its output in the job panel |
+| `m` | aim the highlighted profile's slots: opus, sonnet and haiku edited in sequence, `Enter` advances and the last `Enter` applies only what changed. Names are written as given and never checked (the `use --opus` rule); an emptied field keeps its model |
 | `:` | open the command palette for `doctor`, `usage`, `list`, `status` and `stop`; `run` remains shell-only |
 | `o` | order mode: type the profile numbers in the order automatic switches should follow (previewed by name in the status line), `Enter` applies, `Esc` cancels |
 | `a` | agents mode: aim the per-subagent routes (SPEC-PROVIDERS §4decies). `↑`/`↓` pick a route, `1`-`9` aim it at that profile, `x` clears it, `Enter` applies, `Esc` cancels |

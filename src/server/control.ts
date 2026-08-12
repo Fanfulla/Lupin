@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mergeProfile, persistKeyProfile, type KeySetupOptions } from '../cli/init.js';
 import { ensureOAuthProfile, importOfficialCredentials, verifyToken, type BootstrapIdentity } from '../cli/login.js';
-import { defaultConfigPath, loadConfig, saveConfig, type RoutesConfig } from '../config/config.js';
+import { defaultConfigPath, loadConfig, saveConfig, type RoutesConfig, type SlotName } from '../config/config.js';
 import { deleteOAuthTokens } from '../config/credentials.js';
 import { DOCTOR_MIN_CONTEXT, preflightContext } from '../doctor/plan.js';
 import { DEFAULT_PROFILES, type DefaultProfileDef } from '../providers/defaults.js';
@@ -310,6 +310,47 @@ export function registerControlRoutes(app: Hono, bootstrapIdentity: BootstrapIde
       config.activeProfile = body.profile;
       saveConfig(config);
       return c.json({ ok: true, activeProfile: config.activeProfile });
+    } catch (e) {
+      return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  });
+
+  // Aim a profile's slots (SPEC-CLI §1, the `use --opus` rule): the names are
+  // written as given and never checked, because nothing local can know which
+  // ids a plan will accept, and an invented validation would be worse than
+  // none. Same write path as `use`: the daemon hot-reloads the config.
+  app.post('/v1/lupin/slots', async (c) => {
+    const denied = guard(c);
+    if (denied !== undefined) return denied;
+    let body: { profile?: unknown; opus?: unknown; sonnet?: unknown; haiku?: unknown };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ ok: false, error: 'expected a JSON body { profile, opus?, sonnet?, haiku? }' }, 400);
+    }
+    if (typeof body.profile !== 'string' || body.profile === '') {
+      return c.json({ ok: false, error: 'expected a JSON body { profile, opus?, sonnet?, haiku? }' }, 400);
+    }
+    const aims: [SlotName, unknown][] = [
+      ['opus', body.opus],
+      ['sonnet', body.sonnet],
+      ['haiku', body.haiku],
+    ];
+    for (const [name, v] of aims) {
+      if (v !== undefined && (typeof v !== 'string' || v === '')) {
+        return c.json({ ok: false, error: `"${name}" must be a non-empty model name` }, 400);
+      }
+    }
+    if (aims.every(([, v]) => v === undefined)) {
+      return c.json({ ok: false, error: 'name at least one slot to aim' }, 400);
+    }
+    try {
+      const config = loadConfig();
+      const profile = config.profiles[body.profile];
+      if (profile === undefined) return c.json({ ok: false, error: `unknown profile "${body.profile}"` }, 404);
+      for (const [name, v] of aims) if (typeof v === 'string') profile.slots[name] = v;
+      saveConfig(config);
+      return c.json({ ok: true, slots: profile.slots });
     } catch (e) {
       return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
     }
