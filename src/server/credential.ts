@@ -107,10 +107,10 @@ export async function resolveCredential(
     const movedAt = movedToKeychainAt(auth.apiKeyRef);
     if (movedAt !== undefined) {
       throw new CredentialError(
-        `API key "${auth.apiKeyRef}" lives in the OS keychain (${keychainLabel()}, moved ${movedAt.slice(0, 10)}) and this install cannot read it: install the optional module (npm i @napi-rs/keyring) here, or run: lupin init`,
+        `API key "${auth.apiKeyRef}" lives in the OS keychain (${keychainLabel()}, moved ${movedAt.slice(0, 10)}) and this install cannot read it: install the optional module (npm i @napi-rs/keyring) here, or add the provider again from the hub (run: lupin)`,
       );
     }
-    throw new CredentialError(`API key "${auth.apiKeyRef}" not found (env var or credential store): run: lupin init`);
+    throw new CredentialError(`API key "${auth.apiKeyRef}" not found (env var or credential store): add the provider from the hub (run: lupin)`);
   }
   return auth.type === 'x-api-key'
     ? { header: 'x-api-key', value: apiKey }

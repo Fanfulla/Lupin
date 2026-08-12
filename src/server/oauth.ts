@@ -170,7 +170,7 @@ export async function pollDeviceToken(
 
   for (;;) {
     await sleep(intervalMs);
-    if (Date.now() > deadline) throw new OAuthError('expired_token', 'device code expired: restart lupin login');
+    if (Date.now() > deadline) throw new OAuthError('expired_token', 'device code expired: restart the login');
     let r;
     try {
       r = await postOAuthForm(
@@ -201,7 +201,7 @@ export async function pollDeviceToken(
         intervalMs += 5000; // RFC 8628 §3.5
         continue;
       case 'expired_token':
-        throw new OAuthError('expired_token', 'device code expired: restart lupin login');
+        throw new OAuthError('expired_token', 'device code expired: restart the login');
       case 'access_denied':
         throw new OAuthError('access_denied', 'login denied by the user');
       default:
@@ -266,7 +266,7 @@ export async function resolveOAuthAccessToken(def: OAuthProviderDef, opts: Resol
   // descriptor id: two accounts of one provider refresh independently (§4nonies).
   const key = opts.storeKey ?? def.id;
   const { account } = splitAccountKey(key);
-  const relogin = `lupin login ${def.aliases[0] ?? def.id}${account === undefined ? '' : ` --account ${account}`}`;
+  const relogin = `log in to ${def.aliases[0] ?? def.id}${account === undefined ? '' : ` (account ${account})`} again from the hub (run: lupin)`;
   const stored = getOAuthTokens(key);
   if (stored === undefined) {
     // ADR-43: a marker means the credential is intact in the OS keychain and
@@ -276,10 +276,10 @@ export async function resolveOAuthAccessToken(def: OAuthProviderDef, opts: Resol
     if (movedAt !== undefined) {
       throw new OAuthError(
         'not_logged_in',
-        `credentials for "${key}" live in the OS keychain (${keychainLabel()}, moved ${movedAt.slice(0, 10)}) and this install cannot read them: install the optional module (npm i @napi-rs/keyring) here, or run: ${relogin}`,
+        `credentials for "${key}" live in the OS keychain (${keychainLabel()}, moved ${movedAt.slice(0, 10)}) and this install cannot read them: install the optional module (npm i @napi-rs/keyring) here, or ${relogin}`,
       );
     }
-    throw new OAuthError('not_logged_in', `no OAuth credentials for "${key}": run: ${relogin}`);
+    throw new OAuthError('not_logged_in', `no OAuth credentials for "${key}": ${relogin}`);
   }
   // A token with no expiry and no refresh token (GitHub): refreshing it would
   // fail and tombstone a credential that is still perfectly good.
@@ -296,7 +296,7 @@ export async function resolveOAuthAccessToken(def: OAuthProviderDef, opts: Resol
       .catch((e: unknown) => {
         if (e instanceof OAuthError && (e.code === 'invalid_grant' || e.code === 'expired_token')) {
           deleteOAuthTokens(key); // tombstone: never reuse rejected refresh tokens
-          throw new OAuthError(e.code, `OAuth token for "${key}" expired or revoked: run: ${relogin}`);
+          throw new OAuthError(e.code, `OAuth token for "${key}" expired or revoked: ${relogin}`);
         }
         throw e;
       })

@@ -125,7 +125,7 @@ describe('oauth profiles end-to-end (DESIGN-OAUTH §7)', () => {
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: { type: string; message: string } };
     expect(body.error.type).toBe('authentication_error');
-    expect(body.error.message).toContain('lupin login');
+    expect(body.error.message).toContain('from the hub');
     expect(fake.requests.length).toBe(0); // provider never called with a dead credential
   });
 
@@ -133,7 +133,7 @@ describe('oauth profiles end-to-end (DESIGN-OAUTH §7)', () => {
     const res = await post(app(), { model: 'claude-sonnet-9', max_tokens: 5, messages: [] });
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: { message: string } };
-    expect(body.error.message).toContain('lupin login');
+    expect(body.error.message).toContain('from the hub');
     expect(fake.requests.length).toBe(0);
   });
 });

@@ -17,7 +17,7 @@ export async function doctorCommand(args: string[]): Promise<number> {
   try {
     config = loadConfig();
   } catch {
-    console.error('no config yet, run `lupin init` first');
+    console.error('no config yet: add a provider from the hub (run: lupin)');
     return 1;
   }
   const profileName = profileArg ?? config.activeProfile;
@@ -170,7 +170,7 @@ export async function doctorCommand(args: string[]): Promise<number> {
   return report.passed ? 0 : 1;
 }
 
-/** Best effort: the printed URL stays the real path, exactly like `lupin login`. */
+/** Best effort: the printed URL stays the real path, exactly like the OAuth login. */
 function openBrowser(url: string): void {
   const cmd =
     process.platform === 'win32'

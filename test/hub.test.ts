@@ -95,10 +95,10 @@ describe('hub cold start', () => {
     expect(result).toBe(1);
     expect(tuiAvailable).not.toHaveBeenCalled();
     expect(startBootstrap).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith('no config yet: run `lupin init` first');
+    expect(error).toHaveBeenCalledWith('no config yet: add a provider from the TUI (lupin, sidecar installed) or the control API (README §Headless setup)');
   });
 
-  it('keeps the init guidance and does not start a daemon when the sidecar is absent', async () => {
+  it('keeps the setup guidance and does not start a daemon when the sidecar is absent', async () => {
     const startBootstrap = vi.fn<HubDeps['startBootstrap']>(async () => 'started');
     const error = vi.fn<HubDeps['error']>();
 
@@ -106,7 +106,7 @@ describe('hub cold start', () => {
 
     expect(result).toBe(1);
     expect(startBootstrap).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith('no config yet: run `lupin init` first');
+    expect(error).toHaveBeenCalledWith('no config yet: add a provider from the TUI (lupin, sidecar installed) or the control API (README §Headless setup)');
   });
 });
 

@@ -55,7 +55,7 @@ export interface HubDeps {
   error: (message: string) => void;
 }
 
-const NO_CONFIG = 'no config yet: run `lupin init` first';
+const NO_CONFIG = 'no config yet: add a provider from the TUI (lupin, sidecar installed) or the control API (README §Headless setup)';
 
 export async function hubCommandWith(deps: HubDeps): Promise<number> {
   let configured = deps.configExists();

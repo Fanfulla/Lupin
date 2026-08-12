@@ -38,7 +38,7 @@ export type OAuthFlow =
 
 export interface OAuthProviderDef {
   id: string;
-  /** CLI aliases accepted by `lupin login <name>`. */
+  /** Short names accepted by the login surfaces (control API body, catalogue rows). */
   aliases: string[];
   host: string;
   clientId: string;

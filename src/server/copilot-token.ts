@@ -34,7 +34,7 @@ interface Cached extends CopilotToken {
 const cache = new Map<string, Cached>();
 const inflight = new Map<string, Promise<CopilotToken>>();
 
-/** Test seam and `lupin logout`: forget everything bought with these credentials. */
+/** Test seam and the logout route: forget everything bought with these credentials. */
 export function clearCopilotTokenCache(storeKey?: string): void {
   if (storeKey === undefined) {
     cache.clear();

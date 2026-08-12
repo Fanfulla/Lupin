@@ -1,4 +1,4 @@
-// Best-effort browser open, shared by `lupin login` and the control API. The
+// Best-effort browser open for the control API's OAuth login jobs. The
 // printed URL is always the real path; this is only a convenience.
 
 import { exec } from 'node:child_process';

@@ -1,4 +1,4 @@
-// Wordmark for the CLI header (usage screen, `lupin init`) and, later, for the
+// Wordmark for the CLI header (usage screen) and, later, for the
 // TUI (ROADMAP backlog #8). Box-drawing glyphs only, the same set the CLI
 // already prints (✓, ⚠, …): no colour, no emoji, no dependency, so a redirected
 // stdout keeps it readable and a pipe stays clean.

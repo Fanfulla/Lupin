@@ -176,7 +176,7 @@ export function agentsCommand(args: string[]): number {
   try {
     config = loadConfig();
   } catch {
-    console.error('no config yet: run `lupin init` first');
+    console.error('no config yet: add a provider from the hub (run: lupin)');
     return 1;
   }
 

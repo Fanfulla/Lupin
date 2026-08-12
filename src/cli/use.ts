@@ -33,7 +33,7 @@ const USAGE =
 /**
  * Every flag this command takes, and nothing else. Unknown flags used to fall
  * through as if they had been accepted, so `lupin use p --opus m` switched the
- * profile, left the slot alone and said nothing about it. `lupin login` had been
+ * profile, left the slot alone and said nothing about it. the OAuth login had been
  * printing exactly that command as the way to aim a discovered profile.
  */
 export function parseUseArgs(
@@ -81,7 +81,7 @@ export function useCommand(args: string[]): number {
   try {
     config = loadConfig();
   } catch {
-    console.error('no config yet: run `lupin init` first');
+    console.error('no config yet: add a provider from the hub (run: lupin)');
     return 1;
   }
 
@@ -100,14 +100,14 @@ export function useCommand(args: string[]): number {
     const reset = backgroundReset(name, profile);
     if (reset === undefined) {
       console.error(`profile "${name}": the sonnet slot delegates too, so there is no model name to restore.`);
-      console.error('  point --bg at a profile, or re-run `lupin init` to pick the models again.');
+      console.error('  point --bg at a profile, or set the provider up again from the hub (run: lupin).');
       return 1;
     }
     profile.slots.haiku = reset.haiku;
     bgNote = ` (background/haiku → ${reset.haiku})`;
     if (reset.source === 'sonnet') {
       console.log(`i the original light model cannot be reconstructed: haiku falls back to "${reset.haiku}" (sonnet slot).`);
-      console.log('  to assign a cheaper one again: `lupin init` on the same profile.');
+      console.log('  to assign a cheaper one again: set the profile up again from the hub.');
     }
   } else if (bg !== undefined) {
     profile.slots.haiku = { profile: bg };

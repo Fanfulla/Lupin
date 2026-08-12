@@ -1,4 +1,4 @@
-// Connectivity test for `lupin init` (SPEC-CLI §1): one real 1-token request
+// Connectivity test for key setup (SPEC-CLI §1): one real 1-token request
 // against the provider, before anything is saved. Reuses the core request
 // mapper for translate providers so the test exercises the same path Claude
 // Code will.

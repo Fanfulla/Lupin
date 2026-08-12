@@ -160,10 +160,10 @@ describe('token resolution and refresh (DESIGN-OAUTH §4.3)', () => {
     expect(b).toBe(c);
   });
 
-  it('invalid_grant → tombstone + "lupin login" in the message', async () => {
+  it('invalid_grant → tombstone + the re-login hint in the message', async () => {
     fake.refreshBehavior = { kind: 'invalid_grant' };
     setOAuthTokens(fake.def.id, tokens({ expiresAt: Date.now() + 60_000 }));
-    await expect(resolveOAuthAccessToken(fake.def)).rejects.toThrow(/lupin login/);
+    await expect(resolveOAuthAccessToken(fake.def)).rejects.toThrow(/from the hub/);
     expect(getOAuthTokens(fake.def.id)).toBeUndefined(); // never reuse rejected refresh tokens
   });
 

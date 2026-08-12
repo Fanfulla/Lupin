@@ -66,7 +66,7 @@ export async function runPkceLogin(def: OAuthProviderDef, hooks: PkceLoginHooks)
   if (def.clientId === '') {
     throw new OAuthError(
       'no_client_id',
-      `no public OAuth client_id captured for "${def.id}" yet (see DESIGN-OAUTH-PKCE-TUI §1.1): use an API key with lupin init`,
+      `no public OAuth client_id captured for "${def.id}" yet (see DESIGN-OAUTH-PKCE-TUI §1.1): use an API key from the hub (run: lupin)`,
     );
   }
   const pkce = generatePkce();

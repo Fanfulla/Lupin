@@ -112,20 +112,40 @@ opens the add-provider screen. Nothing sensitive is written yet.
    active. The saved config keeps the same daemon identity, so the screen does
    not disconnect during the transition.
 
-Local runtimes such as Ollama and LM Studio still use `lupin init`: their setup
-discovers live models and asks for slot choices, so it is intentionally a
-separate flow.
+Local runtimes such as Ollama and LM Studio are rows in the same screen: their
+setup probes the live server, shows every chat model with its real window and
+tool support, and asks for the main and light picks before saving anything.
 
 ### Choose the credential path
 
+Every path below is a row in the TUI's add-provider screen (ADR-51: the CLI
+setup verbs are gone).
+
 | You have | Use |
 |---|---|
-| A hosted-provider API key | TUI row marked `API key`, or `lupin init` |
-| ChatGPT subscription | TUI row marked `OAuth`, or `lupin login openai` |
-| Kimi Code subscription | TUI row marked `OAuth`, or `lupin login kimi` |
-| Google Code Assist | TUI OAuth row, or `lupin login gemini --i-accept-the-risk` |
-| GitHub Copilot | TUI OAuth row, or `lupin login copilot --i-accept-the-risk` |
-| Ollama, LM Studio, llama.cpp or ds4 | `lupin init` with the runtime already running |
+| A hosted-provider API key | the row marked `API key` (masked field, 1-token verification) |
+| ChatGPT subscription | the row marked `OAuth` |
+| Kimi Code subscription | the row marked `OAuth` (offers the official-CLI import when found) |
+| Google Code Assist | its OAuth row; the suspension warning must be accepted first |
+| GitHub Copilot | its OAuth row; the suspension warning must be accepted first |
+| Ollama, LM Studio, llama.cpp or ds4 | the row marked `local`, with the runtime already running |
+
+### Headless setup
+
+On a machine with no TTY or no sidecar (a server over SSH, CI), the same setup
+lives on the daemon's control API: every route sits on 127.0.0.1 behind the
+local token from `~/.lupin/config.json`. Add a key provider with one call:
+
+```bash
+curl -s -X POST http://127.0.0.1:3456/v1/lupin/setup-key \
+  -H "authorization: Bearer $(node -p "require(require('os').homedir()+'/.lupin/config.json').localToken")" \
+  -H "content-type: application/json" \
+  -d '{"providerId":"openrouter","key":"sk-or-..."}'
+```
+
+`GET /v1/lupin/providers` lists the rows, `POST /v1/lupin/discover-local` and
+`/v1/lupin/setup-local` cover the local runtimes, `POST /v1/lupin/login` starts
+an OAuth job whose URL you open anywhere (poll `GET /v1/lupin/login/:id`).
 
 ### Verify the first session
 
@@ -145,9 +165,9 @@ truth.
 | Symptom | Check |
 |---|---|
 | `lupin` prints text instead of opening the dashboard | run `lupin-tui --version`; the sidecar must be on the PATH and stdout must be a terminal |
-| `no config yet` | run `lupin init`, or install the sidecar and run bare `lupin` in a real terminal |
+| `no config yet` | install the sidecar and run bare `lupin` in a real terminal, or use the control API (see Headless setup) |
 | `daemon not answering` | run `lupin status`, then restart with `lupin stop` followed by `lupin run -- claude` |
-| API key rejected | retry the masked field or rerun `lupin init`; failed verification saves nothing |
+| API key rejected | retry the masked field; failed verification saves nothing unless you explicitly choose save anyway |
 | OAuth browser did not open | copy the URL shown in the terminal; the CLI/TUI keeps polling |
 | port 3456 already in use | run `lupin status`; do not kill an unrelated process until you identify it |
 | `lupin update` from 0.2.4 fails with Windows `EBUSY` | close Lupin and Claude Code, reboot Windows, then install 0.2.5 or newer before reopening Lupin; use the recovery command below if npm was damaged too |
@@ -391,14 +411,14 @@ Three lines maximum: when space runs out segments drop in order (update, PR, ext
 <details>
 <summary><b>Can I use my ChatGPT subscription with Claude Code?</b></summary>
 
-Yes. `lupin login openai` uses the sanctioned Sign in with ChatGPT flow. The token does not spend on the public OpenAI API, so Lupin talks to the same protocol the official client uses, and `lupin doctor openai-sub` scores 10/10 on a real session.
+Yes. The ChatGPT OAuth row in the hub uses the sanctioned Sign in with ChatGPT flow. The token does not spend on the public OpenAI API, so Lupin talks to the same protocol the official client uses, and `lupin doctor openai-sub` scores 10/10 on a real session.
 
 </details>
 
 <details>
 <summary><b>Can I run Claude Code on Gemini for free?</b></summary>
 
-Yes, with a caveat worth reading. `lupin login gemini` reaches Google Code Assist, whose free tier answers on the flash models and returns 429 on the pro ones. Lupin serves you rather than refusing, and logs every substitution as `tierDowngrade` so you always know which model answered. Two honest warnings: Google collects prompts and code on the free tier with human reviewers able to read them, and Google has suspended accounts for third-party OAuth, which is why the login is gated behind `--i-accept-the-risk`.
+Yes, with a caveat worth reading. The Google OAuth row in the hub reaches Google Code Assist, whose free tier answers on the flash models and returns 429 on the pro ones. Lupin serves you rather than refusing, and logs every substitution as `tierDowngrade` so you always know which model answered. Two honest warnings: Google collects prompts and code on the free tier with human reviewers able to read them, and Google has suspended accounts for third-party OAuth, which is why the login blocks on an explicit risk confirmation first.
 
 </details>
 

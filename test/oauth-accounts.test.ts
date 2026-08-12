@@ -7,7 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { accountKey, isValidAccountLabel, splitAccountKey, type OAuthProviderDef } from '../src/providers/oauth.js';
 import { oauthDefForProfile, resolveCredential } from '../src/server/credential.js';
-import { catalogueLines, parseAccountFlag } from '../src/cli/login.js';
+import { catalogueLines } from '../src/cli/login.js';
 import type { ResolveOAuthOptions } from '../src/server/oauth.js';
 import type { ProfileConfig } from '../src/config/config.js';
 
@@ -55,32 +55,9 @@ describe('the store key carries the account', () => {
   });
 });
 
-describe('lupin login/logout --account', () => {
-  it('no flag means the single-account behaviour that already existed', () => {
-    expect(parseAccountFlag(['acme'])).toBeUndefined();
-  });
-
-  it('reads the label after the flag', () => {
-    expect(parseAccountFlag(['acme', '--account', 'work'])).toBe('work');
-  });
-
-  it('a missing or unusable label is refused, never coerced into a broken key', () => {
-    expect(parseAccountFlag(['acme', '--account'])).toBeNull();
-    expect(parseAccountFlag(['acme', '--account', 'two words'])).toBeNull();
-    expect(parseAccountFlag(['acme', '--account', 'a#b'])).toBeNull();
-  });
-
-  // The provider name is a bare word and so is the account label: reading the
-  // first bare word blindly would make `lupin login --account work` log into a
-  // provider called "work".
-  it('the label is not mistaken for the provider name', () => {
-    const positional = (args: string[]): string[] =>
-      args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--account');
-    expect(positional(['--account', 'work'])).toEqual([]);
-    expect(positional(['acme', '--account', 'work'])).toEqual(['acme']);
-    expect(positional(['--account', 'work', 'acme'])).toEqual(['acme']);
-  });
-});
+// The CLI `--account` flag parser died with the login verb (ADR-51): the
+// account label now travels in the control API body and is validated there
+// (test/control.test.ts). The key algebra above is what survives it.
 
 describe('the descriptor is the provider s, never the account s', () => {
   it('a suffixed key still resolves to the provider descriptor', () => {

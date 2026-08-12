@@ -1,4 +1,4 @@
-// Default profiles for `lupin init` (SPEC-PROVIDERS §3bis). Data only: the
+// Default profiles for setup (SPEC-PROVIDERS §3bis). Data only: the
 // ONE sanctioned place for model names in the tree (CLAUDE.md rule 5), every
 // entry carries its verification date. Slot philosophy: opus=frontier,
 // sonnet=daily driver, haiku=cheap/fast for subagents and background calls.
@@ -41,9 +41,9 @@ export interface DefaultProfileDef {
   /** Marks the init local flow: no key prompt, slots from the live server. */
   local?: true;
   /**
-   * Subscription-only profile: reachable through `lupin login`, never through
-   * the init key wizard (there is no API key to paste). Filtered out of the
-   * init picker; `lupin login` builds the profile from it.
+   * Subscription-only profile: reachable through the OAuth login, never
+   * through the key setup (there is no API key to paste); the login builds
+   * the profile from it.
    */
   oauthOnly?: true;
   /** Hint printed when the local server is down. */
@@ -155,7 +155,7 @@ export const DEFAULT_PROFILES: DefaultProfileDef[] = [
     provider: 'openaisub',
     mode: 'responses',
     description: 'ChatGPT subscription (Sign in with ChatGPT): the Responses API, no API key',
-    auth: 'none', // the credential is the OAuth token, not a key: see lupin login openai
+    auth: 'none', // the credential is the OAuth token, not a key: log in from the hub
     oauthOnly: true,
     slots: { opus: 'gpt-5.6-terra', sonnet: 'gpt-5.6-terra', haiku: 'gpt-5.4-mini' },
     economy: {
@@ -179,7 +179,7 @@ export const DEFAULT_PROFILES: DefaultProfileDef[] = [
     provider: 'geminisub',
     mode: 'codeassist',
     description: 'Gemini Code Assist subscription (Sign in with Google): no API key',
-    auth: 'none', // the credential is the OAuth token: see lupin login gemini
+    auth: 'none', // the credential is the OAuth token: log in from the hub
     oauthOnly: true,
     slots: { opus: 'gemini-3.1-pro-preview', sonnet: 'gemini-2.5-flash', haiku: 'gemini-3.1-flash-lite' },
     verified: '2026-07-29 (live: :streamGenerateContent 200, text and tool call; pro models 429 on the free tier)',
@@ -254,7 +254,7 @@ export const DEFAULT_PROFILES: DefaultProfileDef[] = [
   // GitHub Copilot (2026-08-02). NO slots on purpose: the catalogue changes
   // often and not one of its model ids has been verified against a live
   // account, so writing names here would break rule 5 in the worst way, by
-  // inventing them. `lupin login copilot` reads the real list from the
+  // inventing them. The Copilot login reads the real list from the
   // account's own /models and fills the slots with what it finds, exactly as
   // the local runtimes do at init (SPEC-PROVIDERS §3quater).
   {
@@ -262,7 +262,7 @@ export const DEFAULT_PROFILES: DefaultProfileDef[] = [
     provider: 'copilot',
     mode: 'translate',
     description: 'GitHub Copilot subscription (device-flow login): models read live from your account',
-    auth: 'none', // the credential is the OAuth token, not a key: see lupin login copilot
+    auth: 'none', // the credential is the OAuth token, not a key: log in from the hub
     oauthOnly: true,
     verified: '2026-08-02 (auth and endpoints from the official client bundle; NO live inference call ever made)',
   },

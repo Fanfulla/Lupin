@@ -9,9 +9,6 @@ Common:
   go [profile] -- <cmd>      Switch profile (optional) and run, in one step (e.g. lupin go -- claude)
   resume [profile]           Continue this directory's last Claude Code session on another provider
                              (relaunches claude --continue through Lupin; run it where the session ran)
-  init                       Setup wizard: choose provider, store API key, test connectivity
-  login <provider>           OAuth login (subscription; e.g. lupin login kimi | openai | gemini)
-  logout <provider>          Remove stored OAuth credentials
   use <profile> [--bg <p>|none] [--opus|--sonnet|--haiku <model>]
                              Switch active profile (hot reload, no Claude Code restart)
                              and aim its slots at specific models
@@ -58,12 +55,15 @@ export async function main(argv: string[]): Promise<number> {
       return (await import('./cli/go.js')).goCommand(rest);
     case 'resume':
       return (await import('./cli/resume.js')).resumeCommand(rest);
+    // Setup verbs removed 2026-08-12 (ADR-51): providers are added, logged in
+    // and logged out from the TUI hub (bare `lupin`), which drives the control
+    // API. Headless machines use the same API directly (README §Headless).
     case 'init':
-      return (await import('./cli/init.js')).initCommand();
     case 'login':
-      return (await import('./cli/login.js')).loginCommand(rest);
     case 'logout':
-      return (await import('./cli/login.js')).logoutCommand(rest);
+      console.error(`"lupin ${cmd}" was removed: add providers from the hub (run: lupin).`);
+      console.error('Headless setup goes through the control API: see README §Headless setup.');
+      return 1;
     case 'use':
       return (await import('./cli/use.js')).useCommand(rest);
     case 'agents':

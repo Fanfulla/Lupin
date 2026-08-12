@@ -1,164 +1,21 @@
-// `lupin login <provider>` / `lupin logout <provider>` (DESIGN-OAUTH §4.2):
-// import from official CLI credentials when present, else RFC 8628 device flow.
-// No server route involved; verification happens BEFORE anything is saved.
+// OAuth login shared logic (DESIGN-OAUTH §4.2): official-CLI credential
+// import, token verification (BEFORE anything is saved) and the derived
+// subscription profile. The interactive verbs were removed with ADR-51;
+// the control API (server/control.ts) is the surface that drives this.
 
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline/promises';
 import { defaultConfigPath, loadConfig, saveConfig, type LupinConfig, type ProfileConfig, type SlotName } from '../config/config.js';
-import { credentialStoreLabel, deleteOAuthTokens, setOAuthTokens, type OAuthTokens } from '../config/credentials.js';
+import type { OAuthTokens } from '../config/credentials.js';
 import { DEFAULT_PROFILES } from '../providers/defaults.js';
 import { PROVIDERS, type ProviderDef } from '../providers/registry.js';
 import { resolveCopilotToken } from '../server/copilot-token.js';
 import { freeTierNotice } from '../providers/tiers.js';
-import {
-  accountKey,
-  asDeviceFlow,
-  findOAuthProvider,
-  isValidAccountLabel,
-  OAUTH_PROVIDERS,
-  type OAuthProviderDef,
-} from '../providers/oauth.js';
-import { pollDeviceToken, startDeviceAuthorization } from '../server/oauth.js';
-import { runPkceLogin } from '../server/oauth-pkce.js';
-import { openBrowser } from './browser.js';
+import { accountKey, type OAuthProviderDef } from '../providers/oauth.js';
 
 export type BootstrapIdentity = Pick<LupinConfig, 'port' | 'localToken'>;
-
-/** The OAuth-capable providers, read from the registry: never a hardcoded name. */
-function oauthProviderList(): string {
-  return Object.values(OAUTH_PROVIDERS)
-    .map((d) => d.aliases[0] ?? d.id)
-    .join(', ');
-}
-
-/**
- * `--account <label>`: which account of the provider this login is for
- * (§4nonies). Returns `null` when the flag is present but the label is not
- * usable, so the caller refuses rather than writing a broken store key.
- */
-export function parseAccountFlag(args: string[]): string | undefined | null {
-  const i = args.indexOf('--account');
-  if (i < 0) return undefined;
-  const label = args[i + 1];
-  if (label === undefined || !isValidAccountLabel(label)) return null;
-  return label;
-}
-
-export async function loginCommand(args: string[]): Promise<number> {
-  const account = parseAccountFlag(args);
-  if (account === null) {
-    console.error('--account wants a label of letters, digits, dot, dash or underscore (max 32), for example: --account work');
-    return 1;
-  }
-  // The positional provider name is the first bare word, and `--account work`
-  // puts a bare word right after a flag: skip it.
-  const positional = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--account');
-  const name = positional[0];
-  const autoImport = args.includes('--import');
-  if (name === undefined) {
-    console.error(`usage: lupin login <provider> [--account <label>]\nProviders with an OAuth flow: ${oauthProviderList()}`);
-    return 1;
-  }
-  const def = findOAuthProvider(name);
-  if (def === undefined) {
-    console.error(`no OAuth flow for "${name}". Supported: ${oauthProviderList()} (other providers use API keys: lupin init)`);
-    return 1;
-  }
-
-  let tokens = importOfficialCredentials(def);
-  if (tokens !== undefined) {
-    let doImport = autoImport;
-    if (!doImport) {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      const answer = await rl.question('Credentials of the official Kimi CLI found: import them? [Y/n] ');
-      rl.close();
-      doImport = answer.trim().toLowerCase() !== 'n';
-    }
-    if (!doImport) tokens = undefined;
-  }
-
-  if (tokens === undefined) {
-    if (def.flow.kind === 'device') {
-      const ddef = asDeviceFlow(def);
-      let auth;
-      try {
-        auth = await startDeviceAuthorization(ddef);
-      } catch (e) {
-        console.error(`✗ device authorization failed: ${e instanceof Error ? e.message : String(e)}`);
-        return 1;
-      }
-      const url = auth.verificationUriComplete ?? auth.verificationUri;
-      console.log(`\nOpen in your browser:  ${url}`);
-      console.log(`Verification code:    ${auth.userCode}\n`);
-      openBrowser(url);
-      process.stdout.write('Waiting for confirmation in the browser ');
-      try {
-        tokens = await pollDeviceToken(ddef, auth, { onPending: () => process.stdout.write('.') });
-        process.stdout.write('\n');
-      } catch (e) {
-        process.stdout.write('\n');
-        console.error(`✗ login failed: ${e instanceof Error ? e.message : String(e)}`);
-        return 1;
-      }
-    } else {
-      // PKCE (DESIGN-OAUTH-PKCE-TUI §1.3): a provider that suspends accounts
-      // for third-party OAuth blocks on explicit acceptance BEFORE the browser.
-      if (def.suspensionWarning !== undefined && !args.includes('--i-accept-the-risk')) {
-        console.error(`WARNING: ${def.suspensionWarning}`);
-        console.error(`Re-run with --i-accept-the-risk to continue, or use an API key instead: lupin init`);
-        return 1;
-      }
-      try {
-        tokens = await runPkceLogin(def, { openBrowser, onUrl: (url) => console.log(`\nOpen in your browser:  ${url}\n`) });
-      } catch (e) {
-        console.error(`✗ login failed: ${e instanceof Error ? e.message : String(e)}`);
-        return 1;
-      }
-    }
-  }
-
-  // verify BEFORE saving (DESIGN-OAUTH §4.2 punto 3)
-  const verdict = await verifyToken(def, tokens);
-  if (!verdict.ok) {
-    console.error(`✗ the token does not work against ${def.verifyUrl}: ${verdict.detail}`);
-    return 1;
-  }
-  const storeKey = accountKey(def.id, account);
-  setOAuthTokens(storeKey, tokens);
-  console.log(`✓ login ${def.aliases[0] ?? def.id}${account === undefined ? '' : ` (account ${account})`} succeeded (${verdict.detail})`);
-  console.log(`  (tokens stored in: ${credentialStoreLabel()})`);
-  if (verdict.notice !== undefined) console.log(`\n${verdict.notice}`);
-
-  ensureOAuthProfile(def, account, verdict.models);
-  return 0;
-}
-
-export function logoutCommand(args: string[]): number {
-  const account = parseAccountFlag(args);
-  if (account === null) {
-    console.error('--account wants a label of letters, digits, dot, dash or underscore (max 32)');
-    return 1;
-  }
-  const positional = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--account');
-  const name = positional[0];
-  if (name === undefined) {
-    console.error(`usage: lupin logout <provider> [--account <label>]\nProviders with an OAuth flow: ${oauthProviderList()}`);
-    return 1;
-  }
-  const def = findOAuthProvider(name);
-  if (def === undefined) {
-    console.error(`unknown OAuth provider "${name}". Supported: ${oauthProviderList()}`);
-    return 1;
-  }
-  // Only the named account is forgotten: the other accounts of the same
-  // provider keep their tokens, and so do their profiles (§4nonies).
-  deleteOAuthTokens(accountKey(def.id, account));
-  console.log(`✓ OAuth credentials "${accountKey(def.aliases[0] ?? def.id, account)}" removed`);
-  return 0;
-}
 
 /** Reads the official CLI credential files (kimi-cli), tolerant on field names. */
 export function importOfficialCredentials(def: OAuthProviderDef): OAuthTokens | undefined {
