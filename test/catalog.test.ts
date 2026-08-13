@@ -1,6 +1,8 @@
 // Provider catalogue (design 2026-08-13): normalization from a recorded
 // OpenRouter response, the 10-minute cache, and the honest failure shapes.
-// The fixture is real recorded output (TESTING.md rule), truncated to 5 rows.
+// The recording is real provider output (TESTING.md rule), truncated to 5
+// rows. It lives in test/recordings/, NOT test/fixtures/: that directory
+// belongs to the translation fixture runner, which rejects any other shape.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -8,7 +10,7 @@ import { join } from 'node:path';
 import { clearCatalogCache, fetchCatalog, type CatalogModel } from '../src/providers/catalog.js';
 import type { ProviderDef } from '../src/providers/registry.js';
 
-const fixture = readFileSync(join(import.meta.dirname, 'fixtures', 'catalog', 'openrouter-models.json'), 'utf8');
+const fixture = readFileSync(join(import.meta.dirname, 'recordings', 'openrouter-models.json'), 'utf8');
 
 function defWithCatalog(): ProviderDef {
   return {
