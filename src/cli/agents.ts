@@ -138,30 +138,52 @@ export function findAgentFile(name: string, dirs: string[] = agentDirs()): strin
   return undefined;
 }
 
+/** The wire gesture as data: what changed, or why nothing could. */
+export type WireOutcome =
+  | { ok: true; file: string; previous?: string; value: string }
+  | { ok: false; reason: 'not-found' | 'unwirable'; error: string; hint: string };
+
 /**
- * The --wire gesture: sets the found agent file's `model:` to `value` and says
- * exactly what changed. Returns the exit code; the route itself was already
- * saved by the caller, and every failure path says so.
+ * The --wire gesture (ADR-48), shared by the CLI flag and the control API
+ * (design 2026-08-13): sets the found agent file's `model:` to `value` and
+ * reports exactly what changed. The route itself was already saved by the
+ * caller; a failure here never unsaves it, and the hint carries the line to
+ * paste by hand.
  */
-function wireAgentFile(name: string, value: string): number {
-  const dirs = agentDirs();
+export function wireAgent(name: string, value: string, dirs: string[] = agentDirs()): WireOutcome {
   const file = findAgentFile(name, dirs);
   if (file === undefined) {
-    console.error(`--wire: no agent definition found for "${name}" (looked in ${dirs.join(', ')})`);
-    console.error('  the route itself is saved. Built-in agents have no file: for those, use the');
-    console.error(`  "${SUBAGENTS_ROUTE}" blanket route. For a custom agent, add the line yourself:`);
-    console.error(`  model: ${value}`);
-    return 1;
+    return {
+      ok: false,
+      reason: 'not-found',
+      error: `no agent definition found for "${name}" (looked in ${dirs.join(', ')})`,
+      hint: `model: ${value}`,
+    };
   }
   const wired = wireFrontmatterModel(readFileSync(file, 'utf8'), value);
   if ('error' in wired) {
-    console.error(`--wire: ${file}: ${wired.error}`);
-    console.error(`  the route itself is saved. Add the line yourself: model: ${value}`);
-    return 1;
+    return { ok: false, reason: 'unwirable', error: `${file}: ${wired.error}`, hint: `model: ${value}` };
   }
   writeFileSync(file, wired.content);
-  console.log(`✓ wired ${file}`);
-  console.log(`  model: ${wired.previous ?? '(absent)'} -> ${value}`);
+  return { ok: true, file, ...(wired.previous !== undefined ? { previous: wired.previous } : {}), value };
+}
+
+/** The CLI rendering of the wire outcome: same lines as always, exit code back. */
+function wireAgentFile(name: string, value: string): number {
+  const wired = wireAgent(name, value);
+  if (!wired.ok) {
+    console.error(`--wire: ${wired.error}`);
+    if (wired.reason === 'not-found') {
+      console.error('  the route itself is saved. Built-in agents have no file: for those, use the');
+      console.error(`  "${SUBAGENTS_ROUTE}" blanket route. For a custom agent, add the line yourself:`);
+      console.error(`  ${wired.hint}`);
+    } else {
+      console.error(`  the route itself is saved. Add the line yourself: ${wired.hint}`);
+    }
+    return 1;
+  }
+  console.log(`✓ wired ${wired.file}`);
+  console.log(`  model: ${wired.previous ?? '(absent)'} -> ${wired.value}`);
   return 0;
 }
 

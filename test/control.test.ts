@@ -4,6 +4,7 @@
 // ingress tests use.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import * as fsSync from 'node:fs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -471,6 +472,77 @@ describe('POST /v1/lupin/use', () => {
     });
     expect(res.status).toBe(404);
     expect(loadConfig().activeProfile).toBe('a');
+  });
+});
+
+describe('POST /v1/lupin/agents/wire (ADR-48 over the control API)', () => {
+  const { mkdirSync: mkdir, writeFileSync: writeFile, readFileSync: readFile } = fsSync;
+
+  function agentFile(content: string): { wireDir: string; file: string } {
+    const wireDir = join(dir, 'wire-agents');
+    mkdir(wireDir, { recursive: true });
+    const file = join(wireDir, 'scout.md');
+    writeFile(file, content);
+    return { wireDir, file };
+  }
+
+  const post = (app: ReturnType<typeof appWithControl>, body: unknown) =>
+    app.request('/v1/lupin/agents/wire', { method: 'POST', headers: jsonAuth, body: JSON.stringify(body) });
+
+  it('wires the frontmatter model field and reports the previous value', async () => {
+    const { wireDir, file } = agentFile('---\nname: scout\nmodel: sonnet\n---\nbody stays\n');
+    const app = appWithControl({ agentDirs: () => [wireDir] });
+    const res = await post(app, { name: 'scout' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; file: string; previous?: string; value: string };
+    expect(body).toEqual({ ok: true, file, previous: 'sonnet', value: 'claude-lupin-agent:scout' });
+    const after = readFile(file, 'utf8');
+    expect(after).toContain('model: claude-lupin-agent:scout');
+    expect(after).toContain('body stays');
+  });
+
+  it('unset writes the documented client default, inherit', async () => {
+    const { wireDir, file } = agentFile('---\nname: scout\nmodel: claude-lupin-agent:scout\n---\n');
+    const app = appWithControl({ agentDirs: () => [wireDir] });
+    const res = await post(app, { name: 'scout', unset: true });
+    expect(res.status).toBe(200);
+    expect(readFile(file, 'utf8')).toContain('model: inherit');
+  });
+
+  it('forwards the caller cwd to the lookup dirs (the daemon cwd is the state dir)', async () => {
+    let seen: string | undefined;
+    const app = appWithControl({
+      agentDirs: (cwd?: string) => {
+        seen = cwd;
+        return [join(dir, 'nowhere')];
+      },
+    });
+    await post(app, { name: 'scout', cwd: 'C:/some/project' });
+    expect(seen).toBe('C:/some/project');
+  });
+
+  it('404 with the paste-by-hand hint when no agent file exists', async () => {
+    const app = appWithControl({ agentDirs: () => [join(dir, 'nowhere')] });
+    const res = await post(app, { name: 'ghost' });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { ok: boolean; hint: string };
+    expect(body.ok).toBe(false);
+    expect(body.hint).toBe('model: claude-lupin-agent:ghost');
+  });
+
+  it('422 when the file has no frontmatter block', async () => {
+    const { wireDir } = agentFile('just prose, no block\n');
+    const app = appWithControl({ agentDirs: () => [wireDir] });
+    const res = await post(app, { name: 'scout' });
+    expect(res.status).toBe(422);
+  });
+
+  it('400 on a bad name and a bad body', async () => {
+    const app = appWithControl();
+    expect((await post(app, { name: 'bad name!' })).status).toBe(400);
+    expect((await post(app, {})).status).toBe(400);
+    expect((await post(app, { name: 'scout', unset: 'yes' })).status).toBe(400);
+    expect((await post(app, { name: 'scout', cwd: '' })).status).toBe(400);
   });
 });
 

@@ -11,14 +11,16 @@
 import type { Context, Hono } from 'hono';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { agentDirs, wireAgent } from '../cli/agents.js';
 import { mergeProfile, persistKeyProfile, type KeySetupOptions } from '../cli/init.js';
 import { ensureOAuthProfile, importOfficialCredentials, verifyToken, type BootstrapIdentity } from '../cli/login.js';
-import { defaultConfigPath, loadConfig, saveConfig, type RoutesConfig, type SlotName } from '../config/config.js';
+import { AGENT_NAME_RE, defaultConfigPath, loadConfig, saveConfig, type RoutesConfig, type SlotName } from '../config/config.js';
 import { deleteOAuthTokens } from '../config/credentials.js';
 import { DOCTOR_MIN_CONTEXT, preflightContext } from '../doctor/plan.js';
 import { DEFAULT_PROFILES, type DefaultProfileDef } from '../providers/defaults.js';
 import { fetchCatalog } from '../providers/catalog.js';
 import { discoverChatModels, persistableWindow } from '../providers/local.js';
+import { agentRouteId } from '../providers/resolve.js';
 import { accountKey, findOAuthProvider, isValidAccountLabel, type OAuthProviderDef } from '../providers/oauth.js';
 import { PROVIDERS } from '../providers/registry.js';
 import { runPkceLogin, type PkceLoginHooks } from './oauth-pkce.js';
@@ -68,6 +70,8 @@ export interface ControlDeps {
   fetchCatalog?: typeof fetch;
   /** Seam for the official-CLI credential import, which reads real files otherwise. */
   importCredentials?: typeof importOfficialCredentials;
+  /** Seam for the wire lookup dirs: the real ones live under cwd and home. */
+  agentDirs?: typeof agentDirs;
 }
 
 export interface ProviderCatalogRow {
@@ -515,6 +519,46 @@ export function registerControlRoutes(app: Hono, bootstrapIdentity: BootstrapIde
     } catch (e) {
       return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
     }
+  });
+
+  // The ADR-48 wire gesture over the control API (design 2026-08-13), so the
+  // TUI can offer it after saving a named route. Same bounds as the CLI flag:
+  // that one frontmatter field, old value returned, every other byte
+  // preserved. The daemon's own cwd is the state directory (ADR-49), so the
+  // caller sends ITS cwd for the project-level lookup; a failure never
+  // unsaves the route, and the answer carries the line to paste by hand.
+  app.post('/v1/lupin/agents/wire', async (c) => {
+    const denied = guard(c);
+    if (denied !== undefined) return denied;
+    let body: { name?: unknown; unset?: unknown; cwd?: unknown };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ ok: false, error: 'expected a JSON body { name, unset?, cwd? }' }, 400);
+    }
+    if (typeof body.name !== 'string' || !AGENT_NAME_RE.test(body.name)) {
+      return c.json({ ok: false, error: 'expected a valid agent name (allowed: A-Z a-z 0-9 . _ -, max 32)' }, 400);
+    }
+    if (body.unset !== undefined && typeof body.unset !== 'boolean') {
+      return c.json({ ok: false, error: '"unset" must be a boolean' }, 400);
+    }
+    if (body.cwd !== undefined && (typeof body.cwd !== 'string' || body.cwd === '')) {
+      return c.json({ ok: false, error: '"cwd" must be a non-empty string' }, 400);
+    }
+    // `inherit` is the documented client default, stated rather than a guess:
+    // Lupin never recorded what the field held before the wire (ADR-48).
+    const value = body.unset === true ? 'inherit' : agentRouteId(body.name);
+    const dirs = (deps.agentDirs ?? agentDirs)(typeof body.cwd === 'string' ? body.cwd : undefined);
+    const wired = wireAgent(body.name, value, dirs);
+    if (!wired.ok) {
+      return c.json({ ok: false, error: wired.error, hint: wired.hint }, wired.reason === 'not-found' ? 404 : 422);
+    }
+    return c.json({
+      ok: true,
+      file: wired.file,
+      ...(wired.previous !== undefined ? { previous: wired.previous } : {}),
+      value: wired.value,
+    });
   });
 
   // Start an OAuth login as a job. The job's message carries the URL/code.
