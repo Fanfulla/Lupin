@@ -176,8 +176,9 @@ with the CLI: `n` prompts for a new route name (the agent charset, validated
 at the keystroke), `m` opens the catalogue-assisted model input for the
 highlighted route, and after an apply that aimed a NAMED route the TUI offers
 the ADR-48 wire (`y` writes `model: claude-lupin-agent:<name>` into the
-agent's file through `POST /v1/lupin/agents/wire`, anything else skips; the
-route is saved either way, and a skip prints the line to paste by hand).
+agent's file through `POST /v1/lupin/agents/wire`, `n` or `Esc` skips, other
+keys do nothing; the route is saved either way, and a skip prints the line to
+paste by hand).
 
 Pasting works everywhere a model id is typed. Where the terminal supports
 bracketed paste (every Unix terminal; the Windows console delivers pastes as

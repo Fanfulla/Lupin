@@ -50,6 +50,11 @@ describe('fetchCatalog', () => {
     // pricing arrives as USD-per-token strings and becomes numbers
     expect(first.promptPrice).toBeCloseTo(0.0000005, 10);
     expect(first.completionPrice).toBeCloseTo(0.0000025, 10);
+    // The routed limit wins over the declared maximum (§4quinquies): the
+    // recorded qwen row advertises 1M but its top provider serves 262144.
+    const qwen = result.models[1] as CatalogModel;
+    expect(qwen.id).toBe('qwen/qwen3.8-2.4t-a95b');
+    expect(qwen.contextWindow).toBe(262_144);
   });
 
   it('sends no credential and no headers beyond the bare GET', async () => {
@@ -114,6 +119,19 @@ describe('fetchCatalog', () => {
     const impl = (() => Promise.resolve(new Response('nope', { status: 500 }))) as typeof fetch;
     const result = await fetchCatalog(defWithCatalog(), { fetchImpl: impl });
     expect(result.ok).toBe(false);
+  });
+
+  it('treats a 200 without a data array as a failure and does not cache it', async () => {
+    const wrongShape = (() =>
+      Promise.resolve(new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 200 }))) as typeof fetch;
+    const def = defWithCatalog();
+    const result = await fetchCatalog(def, { fetchImpl: wrongShape });
+    expect(result.ok).toBe(false);
+    // the failure was not cached as an authoritative empty catalogue
+    const { impl } = fetchOk(fixture);
+    const retry = await fetchCatalog(def, { fetchImpl: impl });
+    if (!retry.ok) throw new Error(retry.error);
+    expect(retry.models).toHaveLength(5);
   });
 
   it('answers ok:false for a provider without a catalogue', async () => {

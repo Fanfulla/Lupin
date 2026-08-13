@@ -341,10 +341,15 @@ fn run(
                     .and_then(|c| c.profiles.get(&c.active_profile))
                     .map(|p| p.provider.clone()),
             };
-            let fetched = provider.and_then(|p| {
-                onboarding_identity(&snap, bootstrap_identity)
-                    .and_then(|identity| api::discover_catalog(&identity, &p).ok())
-            });
+            let fetched = provider
+                .and_then(|p| {
+                    onboarding_identity(&snap, bootstrap_identity)
+                        .and_then(|identity| api::discover_catalog(&identity, &p).ok())
+                })
+                // A catalogue with zero rows helps exactly as much as none:
+                // announcing search/Tab over it would promise a feature that
+                // can never suggest anything (review 2026-08-13).
+                .filter(|models| !models.is_empty());
             let got = fetched.is_some();
             match sink {
                 CatalogSink::Quick => {
@@ -490,7 +495,16 @@ fn run(
                 }
                 // While a job is on screen, esc closes it and everything else
                 // still works: the dashboard never stops being a dashboard.
-                if job.is_some() && key.code == KeyCode::Esc {
+                // But an editor OPENED OVER a lingering job panel owns its own
+                // Esc (review 2026-08-13): the user is looking at the editor,
+                // and its footer promises "esc cancel".
+                if job.is_some()
+                    && key.code == KeyCode::Esc
+                    && order.is_none()
+                    && quick.is_none()
+                    && agents_edit.is_none()
+                    && slots_edit.is_none()
+                {
                     let running = job.as_ref().is_some_and(job::Job::running);
                     job = None;
                     message = if running {
@@ -1354,6 +1368,10 @@ fn handle_paste(
     if let Some(q) = quick {
         if matches!(q.phase, QuickPhase::Pick) {
             q.input.paste(&clean);
+        } else {
+            // Loading and the slot toggles have no text field: dropped WITH
+            // words, like every other fieldless paste target.
+            *message = "nothing here takes pasted text".to_string();
         }
         return;
     }

@@ -23,7 +23,7 @@ Three gaps between the TUI and the model-mapping surface the config already supp
 - `ProviderDef` gains `catalogApi?: { url: string }` (registry data, rule 4: capability flag, never `if (provider === x)`). OpenRouter: `https://openrouter.ai/api/v1/models` (public, verified live 2026-08-13; no credential is ever sent).
 - New module `src/providers/catalog.ts`: fetch, normalize, cache.
   - Normalized row: `{ id, name?, contextWindow?, supportsTools?, promptPrice?, completionPrice? }`.
-  - OpenRouter mapping (response shape verified live 2026-08-13): `data[].id`, `name`, `context_length`, `supported_parameters` includes `"tools"`, `pricing.prompt`/`pricing.completion` (USD per token, strings).
+  - OpenRouter mapping (response shape verified live 2026-08-13): `data[].id`, `name`, `top_provider.context_length` with `context_length` as the fallback (amended after review 2026-08-13: for a proxy the routed limit is what counts, SPEC-PROVIDERS §4quinquies), `supported_parameters` includes `"tools"`, `pricing.prompt`/`pricing.completion` (USD per token, strings).
   - In-memory cache per provider, TTL 10 minutes. The daemon owns the cache; the TUI stays stateless.
 - New control endpoint `POST /v1/lupin/discover-catalog { providerId }`:
   - 404 for a provider whose registry entry has no `catalogApi`.

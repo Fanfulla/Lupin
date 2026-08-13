@@ -43,6 +43,7 @@ interface WireRow {
   id?: unknown;
   name?: unknown;
   context_length?: unknown;
+  top_provider?: { context_length?: unknown };
   supported_parameters?: unknown;
   pricing?: { prompt?: unknown; completion?: unknown };
 }
@@ -61,12 +62,20 @@ function normalizeRow(row: WireRow): CatalogModel | undefined {
     : undefined;
   const prompt = price(row.pricing?.prompt);
   const completion = price(row.pricing?.completion);
+  // The routed limit beats the model's declared maximum (§4quinquies: "for a
+  // proxy the second is what counts"; the recorded fixture has a real 3.8x
+  // gap). The declared figure is only the fallback.
+  const routed = row.top_provider?.context_length;
+  const window =
+    typeof routed === 'number' && routed > 0
+      ? routed
+      : typeof row.context_length === 'number' && row.context_length > 0
+        ? row.context_length
+        : undefined;
   return {
     id: row.id,
     ...(typeof row.name === 'string' && row.name !== '' ? { name: row.name } : {}),
-    ...(typeof row.context_length === 'number' && row.context_length > 0
-      ? { contextWindow: row.context_length }
-      : {}),
+    ...(window !== undefined ? { contextWindow: window } : {}),
     ...(params !== undefined ? { supportsTools: params.includes('tools') } : {}),
     ...(prompt !== undefined ? { promptPrice: prompt } : {}),
     ...(completion !== undefined ? { completionPrice: completion } : {}),
@@ -88,7 +97,11 @@ export async function fetchCatalog(def: ProviderDef, opts: CatalogOptions = {}):
     const res = await fetchImpl(api.url, { signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000) });
     if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
     const body = (await res.json()) as { data?: unknown[] };
-    const rows = Array.isArray(body.data) ? (body.data as WireRow[]) : [];
+    // A 200 whose body is not the published shape (a rate-limit envelope, a
+    // renamed field) is a FAILURE, or it would be cached as an authoritative
+    // empty catalogue for the whole TTL.
+    if (!Array.isArray(body.data)) throw new Error('unexpected response shape (no "data" array)');
+    const rows = body.data as WireRow[];
     const models = rows.map(normalizeRow).filter((m): m is CatalogModel => m !== undefined);
     cache.set(def.id, { at: now, models });
     return { ok: true, models };
