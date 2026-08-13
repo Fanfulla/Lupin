@@ -134,6 +134,25 @@ describe('fetchCatalog', () => {
     expect(retry.models).toHaveLength(5);
   });
 
+  it('forwards the resolved auth header, and only that (ADR-53)', async () => {
+    const { impl, calls } = fetchOk(fixture);
+    await fetchCatalog(defWithCatalog(), {
+      fetchImpl: impl,
+      authHeader: { name: 'authorization', value: 'Bearer sk-test' },
+    });
+    expect(calls[0]?.init?.headers).toEqual({ authorization: 'Bearer sk-test' });
+  });
+
+  it('cuts the registry-declared id prefix (Gemini decoration)', async () => {
+    const body = JSON.stringify({ data: [{ id: 'models/gemini-x' }, { id: 'plain-y' }, { id: 'models/' }] });
+    const { impl } = fetchOk(body);
+    const def = defWithCatalog();
+    def.catalogApi = { url: 'https://example.test/models', stripPrefix: 'models/' };
+    const result = await fetchCatalog(def, { fetchImpl: impl });
+    if (!result.ok) throw new Error(result.error);
+    expect(result.models.map((m) => m.id)).toEqual(['gemini-x', 'plain-y']);
+  });
+
   it('answers ok:false for a provider without a catalogue', async () => {
     const def: ProviderDef = { ...defWithCatalog() };
     delete def.catalogApi;

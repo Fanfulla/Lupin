@@ -21,11 +21,15 @@ export interface ProviderDef {
   /** Local runtimes only: dialect of the metadata API and where it lives. */
   localApi?: { kind: LocalApiKind; baseUrl: string };
   /**
-   * Hosted providers that publish a public model catalogue (design
-   * 2026-08-13). Feeds the TUI's assisted input through
+   * Hosted providers that publish a model catalogue (design 2026-08-13,
+   * ADR-52/53). Feeds the TUI's assisted input through
    * `/v1/lupin/discover-catalog`; informs, never gates (ADR-42).
+   * `auth: true` = the list needs the profile's own key, sent with the
+   * provider's own scheme to the provider's own endpoint, nothing else
+   * (ADR-53). `stripPrefix` cuts a provider's id decoration (Gemini's
+   * `models/`) so the served id is what lands in a slot.
    */
-  catalogApi?: { url: string };
+  catalogApi?: { url: string; auth?: true; stripPrefix?: string };
   /**
    * Static headers that let the provider dashboard attribute traffic to Lupin
    * (SPEC-PROVIDERS §5bis). Sent on every request: attribution is per-call, not
@@ -72,6 +76,9 @@ export const PROVIDERS: Record<string, ProviderDef> = {
     modes: ['passthrough'],
     baseUrl: 'https://api.deepseek.com/anthropic',
     auth: 'bearer',
+    // Official api-docs list-models page (verified 2026-08-13): OpenAI-shaped
+    // { data: [{ id }] }, bare ids only. Needs the account key (ADR-53).
+    catalogApi: { url: 'https://api.deepseek.com/models', auth: true },
     verified: '2026-07-18',
   },
   zai: {
@@ -108,6 +115,10 @@ export const PROVIDERS: Record<string, ProviderDef> = {
     modes: ['translate'],
     baseUrl: 'https://api.openai.com/v1',
     auth: 'bearer',
+    // GET /v1/models, OpenAI-shaped { data: [{ id }] }, bare ids. The API
+    // reference page answered 403 to automated fetch on 2026-08-13; the shape
+    // has been stable since the API launched and degrades soft if it drifts.
+    catalogApi: { url: 'https://api.openai.com/v1/models', auth: true },
     verified: '2026-07-18',
   },
   // The ChatGPT subscription backend (M6a). A Codex/ChatGPT OAuth token does
@@ -145,6 +156,14 @@ export const PROVIDERS: Record<string, ProviderDef> = {
     modes: ['translate'],
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     auth: 'bearer',
+    // Official OpenAI-compat doc (verified 2026-08-13): Bearer key, ids come
+    // decorated as `models/gemini-*`; the prefix is cut so the served id is
+    // what a slot needs.
+    catalogApi: {
+      url: 'https://generativelanguage.googleapis.com/v1beta/openai/models',
+      auth: true,
+      stripPrefix: 'models/',
+    },
     verified: '2026-07-19 (official doc ai.google.dev/gemini-api/docs/openai, updated 2026-06-22)',
   },
   // Local providers (SPEC-PROVIDERS §3ter): no credential, models chosen at

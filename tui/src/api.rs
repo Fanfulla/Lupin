@@ -318,9 +318,15 @@ pub fn discover_local(
 pub fn discover_catalog(
     identity: &BootstrapIdentity,
     provider_id: &str,
+    profile: Option<&str>,
 ) -> Result<Vec<CatalogModel>, String> {
     let url = format!("http://127.0.0.1:{}/v1/lupin/discover-catalog", identity.port);
-    let body = serde_json::json!({ "providerId": provider_id });
+    // The profile rides along for the auth catalogues (ADR-53): the daemon
+    // resolves that profile's own key; public catalogues ignore it.
+    let mut body = serde_json::json!({ "providerId": provider_id });
+    if let Some(p) = profile {
+        body["profile"] = serde_json::json!(p);
+    }
     // The daemon's first fetch goes upstream (10s bound server-side), so this
     // deserves the generous client, not the 1.5s control one.
     let res = setup_key_client()?
@@ -967,6 +973,16 @@ mod tests {
         .expect_err("a miss is an error");
         assert!(err.contains("no agent definition found"), "{err}");
         assert!(err.contains("model: claude-lupin-agent:ghost"), "{err}");
+    }
+
+    #[test]
+    fn discover_catalog_names_the_provider_and_the_profile() {
+        let (identity, handle) = capture_request(&http_ok(r#"{"ok":true,"models":[]}"#));
+        let result = super::discover_catalog(&identity, "deepseek", Some("ds"));
+        let request = handle.join().expect("server thread");
+        assert_eq!(result, Ok(Vec::new()));
+        assert!(request.contains("\"providerId\":\"deepseek\""), "{request}");
+        assert!(request.contains("\"profile\":\"ds\""), "{request}");
     }
 
     #[test]

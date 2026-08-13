@@ -2,7 +2,9 @@
 // the capability (`catalogApi`, rule 4) and this module does the one fetch,
 // the normalization and the 10-minute cache. The catalogue INFORMS the TUI's
 // assisted input, it never gates a write (ADR-42: the check is real data or
-// it is nothing). No credential is ever sent: the endpoint is public.
+// it is nothing). A public catalogue sends no credential; an `auth`-flagged
+// one (ADR-53) sends the profile's own key to the provider's own documented
+// endpoint, the exact key that already pays that provider's inference.
 
 import type { ProviderDef } from './registry.js';
 
@@ -25,6 +27,8 @@ export interface CatalogOptions {
   timeoutMs?: number;
   /** Test seam for the cache clock. */
   now?: number;
+  /** ADR-53: the resolved credential for an `auth`-flagged catalogue. */
+  authHeader?: { name: string; value: string };
 }
 
 const CATALOG_TTL_MS = 10 * 60_000;
@@ -55,8 +59,15 @@ function price(v: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-function normalizeRow(row: WireRow): CatalogModel | undefined {
+function normalizeRow(row: WireRow, stripPrefix?: string): CatalogModel | undefined {
   if (typeof row.id !== 'string' || row.id === '') return undefined;
+  // A provider's id decoration (Gemini's `models/`) is cut so the served id
+  // is what a slot needs; registry data, never a provider check (rule 4).
+  const id =
+    stripPrefix !== undefined && row.id.startsWith(stripPrefix)
+      ? row.id.slice(stripPrefix.length)
+      : row.id;
+  if (id === '') return undefined;
   const params = Array.isArray(row.supported_parameters)
     ? row.supported_parameters.filter((p): p is string => typeof p === 'string')
     : undefined;
@@ -73,7 +84,7 @@ function normalizeRow(row: WireRow): CatalogModel | undefined {
         ? row.context_length
         : undefined;
   return {
-    id: row.id,
+    id,
     ...(typeof row.name === 'string' && row.name !== '' ? { name: row.name } : {}),
     ...(window !== undefined ? { contextWindow: window } : {}),
     ...(params !== undefined ? { supportsTools: params.includes('tools') } : {}),
@@ -94,7 +105,12 @@ export async function fetchCatalog(def: ProviderDef, opts: CatalogOptions = {}):
   if (hit !== undefined && now - hit.at < CATALOG_TTL_MS) return { ok: true, models: hit.models };
   const fetchImpl = opts.fetchImpl ?? fetch;
   try {
-    const res = await fetchImpl(api.url, { signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000) });
+    const res = await fetchImpl(api.url, {
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
+      ...(opts.authHeader !== undefined
+        ? { headers: { [opts.authHeader.name]: opts.authHeader.value } }
+        : {}),
+    });
     if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
     const body = (await res.json()) as { data?: unknown[] };
     // A 200 whose body is not the published shape (a rate-limit envelope, a
@@ -102,7 +118,9 @@ export async function fetchCatalog(def: ProviderDef, opts: CatalogOptions = {}):
     // empty catalogue for the whole TTL.
     if (!Array.isArray(body.data)) throw new Error('unexpected response shape (no "data" array)');
     const rows = body.data as WireRow[];
-    const models = rows.map(normalizeRow).filter((m): m is CatalogModel => m !== undefined);
+    const models = rows
+      .map((row) => normalizeRow(row, api.stripPrefix))
+      .filter((m): m is CatalogModel => m !== undefined);
     cache.set(def.id, { at: now, models });
     return { ok: true, models };
   } catch (e) {

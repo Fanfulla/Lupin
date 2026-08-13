@@ -14,7 +14,15 @@ import { existsSync } from 'node:fs';
 import { agentDirs, wireAgent } from '../cli/agents.js';
 import { mergeProfile, persistKeyProfile, type KeySetupOptions } from '../cli/init.js';
 import { ensureOAuthProfile, importOfficialCredentials, verifyToken, type BootstrapIdentity } from '../cli/login.js';
-import { AGENT_NAME_RE, defaultConfigPath, loadConfig, saveConfig, type RoutesConfig, type SlotName } from '../config/config.js';
+import {
+  AGENT_NAME_RE,
+  defaultConfigPath,
+  loadConfig,
+  resolveApiKey,
+  saveConfig,
+  type RoutesConfig,
+  type SlotName,
+} from '../config/config.js';
 import { deleteOAuthTokens } from '../config/credentials.js';
 import { DOCTOR_MIN_CONTEXT, preflightContext } from '../doctor/plan.js';
 import { DEFAULT_PROFILES, type DefaultProfileDef } from '../providers/defaults.js';
@@ -166,24 +174,54 @@ export function registerControlRoutes(app: Hono, bootstrapIdentity: BootstrapIde
   // The hosted twin of discover-local (design 2026-08-13): the registry's
   // catalogApi capability, fetched and cached daemon-side, keyed by the
   // profile's `provider` field. It feeds the TUI's assisted model input and
-  // only informs: no write anywhere is gated on it (ADR-42).
+  // only informs: no write anywhere is gated on it (ADR-42). An `auth`
+  // catalogue (ADR-53) resolves the named profile's own key, the one that
+  // already pays this provider's inference, and sends it nowhere else.
   app.post('/v1/lupin/discover-catalog', async (c) => {
     const denied = guard(c);
     if (denied !== undefined) return denied;
-    let body: { providerId?: unknown };
+    let body: { providerId?: unknown; profile?: unknown };
     try {
-      body = (await c.req.json()) as { providerId?: unknown };
+      body = (await c.req.json()) as typeof body;
     } catch {
-      return c.json({ ok: false, error: 'expected a JSON body { providerId }' }, 400);
+      return c.json({ ok: false, error: 'expected a JSON body { providerId, profile? }' }, 400);
     }
     if (typeof body.providerId !== 'string' || body.providerId === '') {
-      return c.json({ ok: false, error: 'expected a JSON body { providerId }' }, 400);
+      return c.json({ ok: false, error: 'expected a JSON body { providerId, profile? }' }, 400);
+    }
+    if (body.profile !== undefined && (typeof body.profile !== 'string' || body.profile === '')) {
+      return c.json({ ok: false, error: '"profile" must be a non-empty string' }, 400);
     }
     const def = PROVIDERS[body.providerId];
     if (def?.catalogApi === undefined) {
       return c.json({ ok: false, error: `provider "${body.providerId}" publishes no catalogue` }, 404);
     }
-    const result = await fetchCatalog(def, deps.fetchCatalog !== undefined ? { fetchImpl: deps.fetchCatalog } : {});
+    let authHeader: { name: string; value: string } | undefined;
+    if (def.catalogApi.auth === true) {
+      if (typeof body.profile !== 'string') {
+        return c.json({ ok: false, error: `the "${def.id}" catalogue needs a profile whose key can read it` }, 400);
+      }
+      let profile;
+      try {
+        profile = loadConfig().profiles[body.profile];
+      } catch (e) {
+        return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+      }
+      if (profile === undefined) return c.json({ ok: false, error: `unknown profile "${body.profile}"` }, 404);
+      const auth = profile.auth;
+      const key = auth.type === 'bearer' || auth.type === 'x-api-key' ? resolveApiKey(auth) : undefined;
+      if (key === undefined) {
+        // Not an error class the TUI should surface loudly: no key means no
+        // assisted list, and the input degrades to plain text.
+        return c.json({ ok: false, error: `profile "${body.profile}" holds no API key for the catalogue` }, 502);
+      }
+      authHeader =
+        def.auth === 'x-api-key' ? { name: 'x-api-key', value: key } : { name: 'authorization', value: `Bearer ${key}` };
+    }
+    const result = await fetchCatalog(def, {
+      ...(deps.fetchCatalog !== undefined ? { fetchImpl: deps.fetchCatalog } : {}),
+      ...(authHeader !== undefined ? { authHeader } : {}),
+    });
     if (!result.ok) return c.json({ ok: false, error: result.error }, 502);
     return c.json({ ok: true, models: result.models });
   });

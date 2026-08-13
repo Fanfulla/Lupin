@@ -329,22 +329,27 @@ fn run(
         // A pending catalogue fetch runs now, after the draw: one frame said
         // "loading", and a failure only downgrades to a plain input.
         if let Some(sink) = catalog_pending.take() {
-            let provider = match &sink {
-                CatalogSink::Quick => quick.as_ref().map(|q| q.provider.clone()),
-                CatalogSink::Slots => slots_edit.as_ref().map(|e| e.provider.clone()),
+            let target = match &sink {
+                CatalogSink::Quick => quick
+                    .as_ref()
+                    .map(|q| (q.provider.clone(), q.profile.clone())),
+                CatalogSink::Slots => slots_edit
+                    .as_ref()
+                    .map(|e| (e.provider.clone(), e.profile.clone())),
                 // An agent's model target is "a model of the serving profile"
                 // (§4decies), so the ACTIVE profile's provider is the one
                 // whose catalogue helps here.
-                CatalogSink::Agents => snap
-                    .config
-                    .as_ref()
-                    .and_then(|c| c.profiles.get(&c.active_profile))
-                    .map(|p| p.provider.clone()),
+                CatalogSink::Agents => snap.config.as_ref().and_then(|c| {
+                    c.profiles
+                        .get(&c.active_profile)
+                        .map(|p| (p.provider.clone(), c.active_profile.clone()))
+                }),
             };
-            let fetched = provider
-                .and_then(|p| {
-                    onboarding_identity(&snap, bootstrap_identity)
-                        .and_then(|identity| api::discover_catalog(&identity, &p).ok())
+            let fetched = target
+                .and_then(|(provider, profile)| {
+                    onboarding_identity(&snap, bootstrap_identity).and_then(|identity| {
+                        api::discover_catalog(&identity, &provider, Some(&profile)).ok()
+                    })
                 })
                 // A catalogue with zero rows helps exactly as much as none:
                 // announcing search/Tab over it would promise a feature that

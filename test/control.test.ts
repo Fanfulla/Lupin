@@ -434,6 +434,33 @@ describe('POST /v1/lupin/discover-catalog', () => {
     expect((await post(app, {})).status).toBe(400);
   });
 
+  it('an auth catalogue resolves the named profile key and sends it (ADR-53)', async () => {
+    process.env['X'] = 'sk-test';
+    try {
+      const calls: { headers?: unknown }[] = [];
+      const ok = ((_url: string | URL | Request, init?: RequestInit) => {
+        calls.push({ headers: init?.headers });
+        return Promise.resolve(new Response(JSON.stringify({ data: [{ id: 'deepseek-chat' }] }), { status: 200 }));
+      }) as typeof fetch;
+      // baseConfig profile "a" carries apiKeyRef X; deepseek's catalogue is auth-flagged.
+      const res = await post(appWithControl({ fetchCatalog: ok }), { providerId: 'deepseek', profile: 'a' });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { models: { id: string }[] };
+      expect(body.models).toEqual([{ id: 'deepseek-chat' }]);
+      expect(calls[0]?.headers).toEqual({ authorization: 'Bearer sk-test' });
+    } finally {
+      delete process.env['X'];
+    }
+  });
+
+  it('an auth catalogue without a profile or without a stored key degrades honestly', async () => {
+    const app = appWithControl();
+    expect((await post(app, { providerId: 'deepseek' })).status).toBe(400);
+    expect((await post(app, { providerId: 'deepseek', profile: 'ghost' })).status).toBe(404);
+    // profile exists but no key is resolvable: a 502 the TUI degrades on
+    expect((await post(app, { providerId: 'deepseek', profile: 'a' })).status).toBe(502);
+  });
+
   it('502 with the error when the catalogue is unreachable', async () => {
     const down = (() => Promise.reject(new Error('offline'))) as typeof fetch;
     const res = await post(appWithControl({ fetchCatalog: down }), { providerId: 'openrouter' });
