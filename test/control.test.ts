@@ -11,6 +11,7 @@ import { createApp } from '../src/server/ingress.js';
 import { defaultConfigPath, loadConfig, saveConfig, type LupinConfig } from '../src/config/config.js';
 import { getCredential, getOAuthTokens } from '../src/config/credentials.js';
 import type { ControlDeps } from '../src/server/control.js';
+import { clearCatalogCache } from '../src/providers/catalog.js';
 import { startFakePkce, type FakePkce } from './helpers/fake-pkce.js';
 
 let dir: string;
@@ -384,6 +385,70 @@ describe('local setup through the control plane (ADR-51)', () => {
     expect(persisted.port).toBe(7788);
     expect(persisted.localToken).toBe(TOKEN);
     expect(persisted.profiles['lmstudio']?.slots.haiku).toBe('big');
+  });
+});
+
+describe('POST /v1/lupin/discover-catalog', () => {
+  beforeEach(() => {
+    clearCatalogCache();
+  });
+
+  const post = (app: ReturnType<typeof appWithControl>, body: unknown) =>
+    app.request('/v1/lupin/discover-catalog', { method: 'POST', headers: jsonAuth, body: JSON.stringify(body) });
+
+  const catalogBody = JSON.stringify({
+    data: [
+      {
+        id: 'vendor/alpha',
+        name: 'Alpha',
+        context_length: 100000,
+        supported_parameters: ['tools'],
+        pricing: { prompt: '0.000001', completion: '0.000002' },
+      },
+    ],
+  });
+
+  it('returns the normalized catalogue of a provider that publishes one', async () => {
+    const ok = (() => Promise.resolve(new Response(catalogBody, { status: 200 }))) as typeof fetch;
+    const res = await post(appWithControl({ fetchCatalog: ok }), { providerId: 'openrouter' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; models: unknown[] };
+    expect(body.ok).toBe(true);
+    expect(body.models).toEqual([
+      {
+        id: 'vendor/alpha',
+        name: 'Alpha',
+        contextWindow: 100000,
+        supportsTools: true,
+        promptPrice: 0.000001,
+        completionPrice: 0.000002,
+      },
+    ]);
+  });
+
+  it('404 for a provider without a catalogue, unknown provider, 400 for a bad body', async () => {
+    const app = appWithControl();
+    expect((await post(app, { providerId: 'moonshot' })).status).toBe(404);
+    expect((await post(app, { providerId: 'nope' })).status).toBe(404);
+    expect((await post(app, {})).status).toBe(400);
+  });
+
+  it('502 with the error when the catalogue is unreachable', async () => {
+    const down = (() => Promise.reject(new Error('offline'))) as typeof fetch;
+    const res = await post(appWithControl({ fetchCatalog: down }), { providerId: 'openrouter' });
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain('openrouter.ai');
+  });
+
+  it('is behind the local token like every control route', async () => {
+    const res = await appWithControl().request('/v1/lupin/discover-catalog', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ providerId: 'openrouter' }),
+    });
+    expect(res.status).toBe(401);
   });
 });
 

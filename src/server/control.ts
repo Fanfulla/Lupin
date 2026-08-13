@@ -17,6 +17,7 @@ import { defaultConfigPath, loadConfig, saveConfig, type RoutesConfig, type Slot
 import { deleteOAuthTokens } from '../config/credentials.js';
 import { DOCTOR_MIN_CONTEXT, preflightContext } from '../doctor/plan.js';
 import { DEFAULT_PROFILES, type DefaultProfileDef } from '../providers/defaults.js';
+import { fetchCatalog } from '../providers/catalog.js';
 import { discoverChatModels, persistableWindow } from '../providers/local.js';
 import { accountKey, findOAuthProvider, isValidAccountLabel, type OAuthProviderDef } from '../providers/oauth.js';
 import { PROVIDERS } from '../providers/registry.js';
@@ -63,6 +64,8 @@ export interface ControlDeps {
   verifyToken?: typeof verifyToken;
   /** Seam for local-runtime discovery: the probes hit 127.0.0.1 ports otherwise. */
   fetchLocal?: typeof fetch;
+  /** Seam for the hosted catalogue fetch (design 2026-08-13). */
+  fetchCatalog?: typeof fetch;
   /** Seam for the official-CLI credential import, which reads real files otherwise. */
   importCredentials?: typeof importOfficialCredentials;
 }
@@ -154,6 +157,31 @@ export function registerControlRoutes(app: Hono, bootstrapIdentity: BootstrapIde
     }
     const models = discovered.models.map((m) => ({ ...m, contextTooSmall: !preflightContext(m.contextWindow).ok }));
     return c.json({ ok: true, models });
+  });
+
+  // The hosted twin of discover-local (design 2026-08-13): the registry's
+  // catalogApi capability, fetched and cached daemon-side, keyed by the
+  // profile's `provider` field. It feeds the TUI's assisted model input and
+  // only informs: no write anywhere is gated on it (ADR-42).
+  app.post('/v1/lupin/discover-catalog', async (c) => {
+    const denied = guard(c);
+    if (denied !== undefined) return denied;
+    let body: { providerId?: unknown };
+    try {
+      body = (await c.req.json()) as { providerId?: unknown };
+    } catch {
+      return c.json({ ok: false, error: 'expected a JSON body { providerId }' }, 400);
+    }
+    if (typeof body.providerId !== 'string' || body.providerId === '') {
+      return c.json({ ok: false, error: 'expected a JSON body { providerId }' }, 400);
+    }
+    const def = PROVIDERS[body.providerId];
+    if (def?.catalogApi === undefined) {
+      return c.json({ ok: false, error: `provider "${body.providerId}" publishes no catalogue` }, 404);
+    }
+    const result = await fetchCatalog(def, deps.fetchCatalog !== undefined ? { fetchImpl: deps.fetchCatalog } : {});
+    if (!result.ok) return c.json({ ok: false, error: result.error }, 502);
+    return c.json({ ok: true, models: result.models });
   });
 
   // Writes a local profile from the TUI's picks: the same shape initLocal
