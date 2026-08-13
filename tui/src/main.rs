@@ -168,6 +168,38 @@ pub(crate) enum ModelPickTarget {
     Light,
 }
 
+/// Quick-model (design 2026-08-13): one id, pasted or picked from the
+/// catalogue, aimed at the whole profile in one gesture. Two phases so the
+/// slot toggles never collide with typing: pick the id first, choose the
+/// slots second (letters are free there).
+pub(crate) enum QuickPhase {
+    Loading,
+    Pick,
+    Slots {
+        id: String,
+        /// The catalogue's window for the id, riding the same write (§4quater).
+        window: Option<u64>,
+        advisory: Option<String>,
+        include: [bool; 3],
+    },
+}
+
+pub(crate) struct QuickModel {
+    pub profile: String,
+    pub provider: String,
+    /// The current slot labels: the "from" half of every narrated change.
+    pub current: [String; 3],
+    pub input: model_input::ModelInput,
+    pub phase: QuickPhase,
+}
+
+/// Where a finished catalogue fetch lands: the fetch happens after a draw
+/// (the Loading pattern the onboarding uses), never inside key handling.
+enum CatalogSink {
+    Quick,
+    Slots,
+}
+
 fn main() -> io::Result<()> {
     // --version / no-config short-circuits, kept out of the alternate screen.
     if std::env::args().any(|a| a == "--version" || a == "-V") {
@@ -246,6 +278,11 @@ fn run(
     // Slots editor (`m`): Some(edit) while the three slots of the selected
     // profile are being aimed, None otherwise. Applied on the last Enter.
     let mut slots_edit: Option<ui::SlotsEdit> = None;
+    // Quick-model (`t`): one id aimed at the whole selected profile.
+    let mut quick: Option<QuickModel> = None;
+    // A catalogue fetch owed to a just-opened editor: resolved after the next
+    // draw, so the screen says "loading" instead of freezing silently.
+    let mut catalog_pending: Option<CatalogSink> = None;
     let mut add_provider = needs_provider(&snap).then_some(AddProviderMode::Loading);
     loop {
         if last.elapsed() >= REFRESH {
@@ -284,9 +321,54 @@ fn run(
                 palette,
                 agents_edit.as_ref(),
                 slots_edit.as_ref(),
+                quick.as_ref(),
                 add_provider.as_ref(),
             )
         })?;
+        // A pending catalogue fetch runs now, after the draw: one frame said
+        // "loading", and a failure only downgrades to a plain input.
+        if let Some(sink) = catalog_pending.take() {
+            let provider = match &sink {
+                CatalogSink::Quick => quick.as_ref().map(|q| q.provider.clone()),
+                CatalogSink::Slots => slots_edit.as_ref().map(|e| e.provider.clone()),
+            };
+            let fetched = provider.and_then(|p| {
+                onboarding_identity(&snap, bootstrap_identity)
+                    .and_then(|identity| api::discover_catalog(&identity, &p).ok())
+            });
+            let got = fetched.is_some();
+            match sink {
+                CatalogSink::Quick => {
+                    if let Some(q) = quick.as_mut() {
+                        q.input.catalog = fetched;
+                        q.phase = QuickPhase::Pick;
+                        message = if got {
+                            format!(
+                                "try a model for {}: type to search the catalogue, or paste an id",
+                                q.profile
+                            )
+                        } else {
+                            format!(
+                                "no catalogue for {}: paste or type the id, enter picks it",
+                                q.profile
+                            )
+                        };
+                    }
+                }
+                CatalogSink::Slots => {
+                    if let Some(edit) = slots_edit.as_mut() {
+                        edit.catalog = fetched;
+                        if got {
+                            message = format!(
+                                "aim slots for {}: tab completes from the catalogue",
+                                edit.profile
+                            );
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         if matches!(add_provider, Some(AddProviderMode::Loading)) {
             add_provider = Some(load_providers(&snap, bootstrap_identity));
             continue;
@@ -320,6 +402,7 @@ fn run(
                     text,
                     add_provider.as_mut(),
                     slots_edit.as_mut(),
+                    quick.as_mut(),
                     &mut message,
                 );
                 continue;
@@ -431,6 +514,32 @@ fn run(
                     }
                     continue;
                 }
+                // Quick-model swallows its keys like every editor: letters
+                // spell an id in the pick phase, and toggle slots after it.
+                if let Some(q) = quick.as_mut() {
+                    match handle_quick_key(q, key.code) {
+                        QuickAction::Stay => {}
+                        QuickAction::Note(note) => message = note,
+                        QuickAction::Cancel(reason) => {
+                            quick = None;
+                            message = reason;
+                        }
+                        QuickAction::Apply {
+                            aims,
+                            windows,
+                            said,
+                        } => {
+                            let q = quick.take().expect("checked just above");
+                            message = match api::set_slots(&snap, &q.profile, &aims, &windows) {
+                                Ok(()) => format!("{}: {said}", q.profile),
+                                Err(e) => format!("aim slots failed: {e}"),
+                            };
+                            snap = api::snapshot(cfg_path, bootstrap_identity);
+                            last = Instant::now();
+                        }
+                    }
+                    continue;
+                }
                 // Agents mode swallows its own keys the same way: a digit here
                 // aims the selected route, never switches the active profile.
                 if let Some(edit) = agents_edit.as_mut() {
@@ -500,9 +609,26 @@ fn run(
                         }
                         SlotsAction::Apply(aims) => {
                             let edit = slots_edit.take().expect("checked just above");
+                            // A value the catalogue knows carries its window in
+                            // the same write (§4quater autofill).
+                            let windows: Vec<(String, u64)> = edit
+                                .catalog
+                                .as_deref()
+                                .map(|catalog| {
+                                    aims.iter()
+                                        .filter_map(|(_, v)| {
+                                            catalog
+                                                .iter()
+                                                .find(|m| m.id == *v)
+                                                .and_then(|m| m.context_window)
+                                                .map(|w| (v.clone(), w))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
                             let said: Vec<String> =
                                 aims.iter().map(|(s, m)| format!("{s}={m}")).collect();
-                            message = match api::set_slots(&snap, &edit.profile, &aims) {
+                            message = match api::set_slots(&snap, &edit.profile, &aims, &windows) {
                                 Ok(()) => {
                                     format!("{}: slots aimed ({})", edit.profile, said.join(", "))
                                 }
@@ -523,6 +649,15 @@ fn run(
                                 edit.profile
                             );
                             slots_edit = Some(edit);
+                            catalog_pending = Some(CatalogSink::Slots);
+                        }
+                        None => message = "no profile selected".to_string(),
+                    },
+                    KeyCode::Char('t') => match quick_model_for(&snap, selected) {
+                        Some(q) => {
+                            message = format!("loading the {} catalogue...", q.provider);
+                            quick = Some(q);
+                            catalog_pending = Some(CatalogSink::Quick);
                         }
                         None => message = "no profile selected".to_string(),
                     },
@@ -731,7 +866,21 @@ pub(crate) fn handle_slots_key(edit: &mut ui::SlotsEdit, key: KeyCode) -> SlotsA
             edit.field = edit.field.saturating_sub(1);
             SlotsAction::Stay
         }
-        KeyCode::Down | KeyCode::Tab => {
+        KeyCode::Tab => {
+            // With a catalogue and matching text, Tab completes the field;
+            // otherwise it keeps its old gesture and moves down a field.
+            if let Some(id) = edit
+                .catalog
+                .as_deref()
+                .and_then(|catalog| model_input::first_match(catalog, &edit.values[edit.field]))
+            {
+                edit.values[edit.field] = id;
+            } else if edit.field + 1 < ui::SLOT_NAMES.len() {
+                edit.field += 1;
+            }
+            SlotsAction::Stay
+        }
+        KeyCode::Down => {
             if edit.field + 1 < ui::SLOT_NAMES.len() {
                 edit.field += 1;
             }
@@ -762,13 +911,8 @@ pub(crate) fn handle_slots_key(edit: &mut ui::SlotsEdit, key: KeyCode) -> SlotsA
     }
 }
 
-/// The editor for the selected profile row, prefilled with the current slot
-/// labels. A delegated slot shows its `->profile` label: typing over it
-/// replaces the delegation with a model string, leaving it keeps it (the
-/// unchanged label never matches a model name, so nothing is sent for it).
-fn slots_edit_for(snap: &api::Snapshot, selected: usize) -> Option<ui::SlotsEdit> {
-    let name = snap.profile_names.get(selected)?;
-    let profile = snap.config.as_ref()?.profiles.get(name)?;
+/// The current slot labels of a profile row, in SLOT_NAMES order.
+fn current_slot_labels(profile: &config::ProfileConfig) -> [String; 3] {
     let current: Vec<String> = ui::SLOT_NAMES
         .iter()
         .map(|slot| {
@@ -779,13 +923,158 @@ fn slots_edit_for(snap: &api::Snapshot, selected: usize) -> Option<ui::SlotsEdit
                 .unwrap_or_default()
         })
         .collect();
-    let values: [String; 3] = [current[0].clone(), current[1].clone(), current[2].clone()];
+    [current[0].clone(), current[1].clone(), current[2].clone()]
+}
+
+/// The editor for the selected profile row, prefilled with the current slot
+/// labels. A delegated slot shows its `->profile` label: typing over it
+/// replaces the delegation with a model string, leaving it keeps it (the
+/// unchanged label never matches a model name, so nothing is sent for it).
+fn slots_edit_for(snap: &api::Snapshot, selected: usize) -> Option<ui::SlotsEdit> {
+    let name = snap.profile_names.get(selected)?;
+    let profile = snap.config.as_ref()?.profiles.get(name)?;
+    let values = current_slot_labels(profile);
     Some(ui::SlotsEdit {
         profile: name.clone(),
+        provider: profile.provider.clone(),
         original: values.clone(),
         values,
         field: 0,
+        catalog: None,
     })
+}
+
+/// The quick-model gesture for the selected profile row (design 2026-08-13).
+fn quick_model_for(snap: &api::Snapshot, selected: usize) -> Option<QuickModel> {
+    let name = snap.profile_names.get(selected)?;
+    let profile = snap.config.as_ref()?.profiles.get(name)?;
+    Some(QuickModel {
+        profile: name.clone(),
+        provider: profile.provider.clone(),
+        current: current_slot_labels(profile),
+        input: model_input::ModelInput::new(None),
+        phase: QuickPhase::Loading,
+    })
+}
+
+/// What one key does to the quick-model editor. Pure, like the slots handler.
+pub(crate) enum QuickAction {
+    Stay,
+    Note(String),
+    Cancel(String),
+    Apply {
+        aims: Vec<(&'static str, String)>,
+        windows: Vec<(String, u64)>,
+        said: String,
+    },
+}
+
+pub(crate) fn handle_quick_key(q: &mut QuickModel, key: KeyCode) -> QuickAction {
+    match &q.phase {
+        QuickPhase::Loading => match key {
+            KeyCode::Esc => QuickAction::Cancel("quick model cancelled".to_string()),
+            _ => QuickAction::Stay,
+        },
+        QuickPhase::Pick => match key {
+            KeyCode::Esc => QuickAction::Cancel("quick model cancelled".to_string()),
+            KeyCode::Up => {
+                q.input.up();
+                QuickAction::Stay
+            }
+            KeyCode::Down => {
+                q.input.down();
+                QuickAction::Stay
+            }
+            KeyCode::Backspace => {
+                q.input.backspace();
+                QuickAction::Stay
+            }
+            KeyCode::Enter => {
+                let id = q.input.accept();
+                if id.is_empty() {
+                    return QuickAction::Note("type or paste a model id first".to_string());
+                }
+                let window = q.input.accepted_row().and_then(|m| m.context_window);
+                let advisory = q.input.advisory();
+                q.phase = QuickPhase::Slots {
+                    id,
+                    window,
+                    advisory,
+                    include: [true; 3],
+                };
+                QuickAction::Stay
+            }
+            KeyCode::Char(c) => {
+                q.input.type_char(c);
+                QuickAction::Stay
+            }
+            _ => QuickAction::Stay,
+        },
+        QuickPhase::Slots { .. } => handle_quick_slots_key(q, key),
+    }
+}
+
+/// The second phase: the slot toggles, where letters are free again.
+fn handle_quick_slots_key(q: &mut QuickModel, key: KeyCode) -> QuickAction {
+    let QuickPhase::Slots {
+        id,
+        window,
+        advisory,
+        include,
+    } = &mut q.phase
+    else {
+        return QuickAction::Stay;
+    };
+    match key {
+        KeyCode::Esc => {
+            q.phase = QuickPhase::Pick;
+            QuickAction::Note("back to the pick (esc again cancels)".to_string())
+        }
+        KeyCode::Char('o') => {
+            include[0] = !include[0];
+            QuickAction::Stay
+        }
+        KeyCode::Char('s') => {
+            include[1] = !include[1];
+            QuickAction::Stay
+        }
+        KeyCode::Char('h') => {
+            include[2] = !include[2];
+            QuickAction::Stay
+        }
+        KeyCode::Enter => {
+            if !include.iter().any(|on| *on) {
+                return QuickAction::Note(
+                    "no slot included: o/s/h toggle, enter applies".to_string(),
+                );
+            }
+            let aims: Vec<(&'static str, String)> = ui::SLOT_NAMES
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| include[*i])
+                .map(|(_, name)| (*name, id.clone()))
+                .collect();
+            let windows = match window {
+                Some(w) => vec![(id.clone(), *w)],
+                None => Vec::new(),
+            };
+            let mut parts: Vec<String> = ui::SLOT_NAMES
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| include[*i])
+                .map(|(i, name)| format!("{name} {} -> {id}", q.current[i]))
+                .collect();
+            if let Some(a) = advisory {
+                parts.push(format!("({a})"));
+            }
+            QuickAction::Apply {
+                aims,
+                windows,
+                said: parts.join(", "),
+            }
+        }
+        _ => QuickAction::Stay,
+    }
 }
 
 fn clear_cancelled_key(value: &mut String) {
@@ -800,6 +1089,7 @@ fn handle_paste(
     text: &str,
     add_provider: Option<&mut AddProviderMode>,
     slots_edit: Option<&mut ui::SlotsEdit>,
+    quick: Option<&mut QuickModel>,
     message: &mut String,
 ) {
     let clean: String = text.chars().filter(|c| !c.is_control()).collect();
@@ -818,6 +1108,12 @@ fn handle_paste(
                 }
             }
             _ => *message = "nothing here takes pasted text".to_string(),
+        }
+        return;
+    }
+    if let Some(q) = quick {
+        if matches!(q.phase, QuickPhase::Pick) {
+            q.input.paste(&clean);
         }
         return;
     }
@@ -2678,9 +2974,11 @@ mod tests {
     fn slots_edit() -> ui::SlotsEdit {
         ui::SlotsEdit {
             profile: "p".to_string(),
+            provider: "prov".to_string(),
             values: ["a".to_string(), "b".to_string(), "c".to_string()],
             original: ["a".to_string(), "b".to_string(), "c".to_string()],
             field: 0,
+            catalog: None,
         }
     }
 
@@ -2730,5 +3028,116 @@ mod tests {
             handle_slots_key(&mut edit, KeyCode::Esc),
             SlotsAction::Cancel(_)
         ));
+    }
+
+    fn catalog() -> Vec<crate::api::CatalogModel> {
+        vec![crate::api::CatalogModel {
+            id: "vendor/alpha".to_string(),
+            name: Some("Alpha".to_string()),
+            context_window: Some(262_144),
+            supports_tools: Some(true),
+            prompt_price: None,
+            completion_price: None,
+        }]
+    }
+
+    #[test]
+    fn slots_tab_completes_from_the_catalogue_and_keeps_its_old_gesture_without_one() {
+        let mut edit = slots_edit();
+        // No catalogue: Tab still moves down a field.
+        handle_slots_key(&mut edit, KeyCode::Tab);
+        assert_eq!(edit.field, 1);
+
+        let mut edit = slots_edit();
+        edit.catalog = Some(catalog());
+        edit.values[0] = "alpha".to_string();
+        handle_slots_key(&mut edit, KeyCode::Tab);
+        assert_eq!(edit.values[0], "vendor/alpha");
+        assert_eq!(edit.field, 0, "a completion is not a field move");
+    }
+
+    fn quick() -> super::QuickModel {
+        super::QuickModel {
+            profile: "or".to_string(),
+            provider: "openrouter".to_string(),
+            current: ["m1".to_string(), "m2".to_string(), "m3".to_string()],
+            input: crate::model_input::ModelInput::new(Some(catalog())),
+            phase: super::QuickPhase::Pick,
+        }
+    }
+
+    #[test]
+    fn quick_enter_picks_the_id_and_carries_the_catalogue_window() {
+        use super::{handle_quick_key, QuickAction, QuickPhase};
+        let mut q = quick();
+        for c in "alpha".chars() {
+            handle_quick_key(&mut q, KeyCode::Char(c));
+        }
+        handle_quick_key(&mut q, KeyCode::Down); // highlight the catalogue row
+        assert!(matches!(
+            handle_quick_key(&mut q, KeyCode::Enter),
+            QuickAction::Stay
+        ));
+        let QuickPhase::Slots { id, window, advisory, include } = &q.phase else {
+            panic!("enter must move to the slot phase");
+        };
+        assert_eq!(id, "vendor/alpha");
+        assert_eq!(*window, Some(262_144));
+        assert_eq!(*advisory, None);
+        assert_eq!(*include, [true; 3]);
+    }
+
+    #[test]
+    fn quick_toggles_exclude_slots_and_apply_names_the_changes() {
+        use super::{handle_quick_key, QuickAction};
+        let mut q = quick();
+        q.input.paste("vendor/alpha");
+        handle_quick_key(&mut q, KeyCode::Enter);
+        handle_quick_key(&mut q, KeyCode::Char('s')); // sonnet out
+        match handle_quick_key(&mut q, KeyCode::Enter) {
+            QuickAction::Apply { aims, windows, said } => {
+                assert_eq!(
+                    aims,
+                    vec![
+                        ("opus", "vendor/alpha".to_string()),
+                        ("haiku", "vendor/alpha".to_string())
+                    ]
+                );
+                assert_eq!(windows, vec![("vendor/alpha".to_string(), 262_144)]);
+                assert!(said.contains("opus m1 -> vendor/alpha"), "{said}");
+                assert!(!said.contains("sonnet"), "{said}");
+            }
+            _ => panic!("expected an apply"),
+        }
+    }
+
+    #[test]
+    fn quick_apply_with_every_slot_excluded_answers_in_words() {
+        use super::{handle_quick_key, QuickAction};
+        let mut q = quick();
+        q.input.paste("anything/goes");
+        handle_quick_key(&mut q, KeyCode::Enter);
+        for c in "osh".chars() {
+            handle_quick_key(&mut q, KeyCode::Char(c));
+        }
+        assert!(matches!(
+            handle_quick_key(&mut q, KeyCode::Enter),
+            QuickAction::Note(_)
+        ));
+    }
+
+    #[test]
+    fn quick_off_catalogue_id_carries_the_advisory_into_the_apply() {
+        use super::{handle_quick_key, QuickAction};
+        let mut q = quick();
+        q.input.paste("unknown/model");
+        handle_quick_key(&mut q, KeyCode::Enter);
+        match handle_quick_key(&mut q, KeyCode::Enter) {
+            QuickAction::Apply { said, windows, .. } => {
+                assert!(said.contains("not in the provider's catalogue"), "{said}");
+                assert!(windows.is_empty(), "no invented window for an unknown id");
+            }
+            _ => panic!("expected an apply"),
+        }
     }
 }

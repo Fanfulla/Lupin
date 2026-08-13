@@ -649,18 +649,36 @@ pub fn set_switch_order(snap: &Snapshot, order: &[String]) -> Result<(), String>
 }
 
 /// The `POST /v1/lupin/slots` body: only the aimed slots are named, so the
-/// daemon leaves the others alone. Split out for the wire test.
-fn slots_body(profile: &str, aims: &[(&'static str, String)]) -> serde_json::Value {
+/// daemon leaves the others alone. A model whose window the catalogue knows
+/// rides the same call as `contextWindows` (design 2026-08-13), so one
+/// gesture is one write. Split out for the wire test.
+fn slots_body(
+    profile: &str,
+    aims: &[(&'static str, String)],
+    windows: &[(String, u64)],
+) -> serde_json::Value {
     let mut body = serde_json::json!({ "profile": profile });
     for (slot, model) in aims {
         body[*slot] = serde_json::json!(model);
+    }
+    if !windows.is_empty() {
+        let map: serde_json::Map<String, serde_json::Value> = windows
+            .iter()
+            .map(|(model, w)| (model.clone(), serde_json::json!(w)))
+            .collect();
+        body["contextWindows"] = serde_json::Value::Object(map);
     }
     body
 }
 
 /// Aim a profile's slots (SPEC-CLI section 1, the `use --opus` rule): the
 /// names travel as given and are never checked, and the screen says so too.
-pub fn set_slots(snap: &Snapshot, profile: &str, aims: &[(&'static str, String)]) -> Result<(), String> {
+pub fn set_slots(
+    snap: &Snapshot,
+    profile: &str,
+    aims: &[(&'static str, String)],
+    windows: &[(String, u64)],
+) -> Result<(), String> {
     let Some(config) = &snap.config else {
         return Err("no config".to_string());
     };
@@ -672,7 +690,7 @@ pub fn set_slots(snap: &Snapshot, profile: &str, aims: &[(&'static str, String)]
     let res = client
         .post(&url)
         .header("authorization", format!("Bearer {}", config.local_token))
-        .json(&slots_body(profile, aims))
+        .json(&slots_body(profile, aims, windows))
         .send()
         .map_err(|_| "daemon not answering (lupin run -- claude starts it)".to_string())?;
     if res.status().is_success() {
@@ -1193,10 +1211,25 @@ mod tests {
 
     #[test]
     fn slots_body_names_only_the_aimed_slots() {
-        let body = slots_body("kimi", &[("opus", "big".to_string()), ("haiku", "small".to_string())]);
+        let body = slots_body(
+            "kimi",
+            &[("opus", "big".to_string()), ("haiku", "small".to_string())],
+            &[],
+        );
         assert_eq!(body["profile"], "kimi");
         assert_eq!(body["opus"], "big");
         assert_eq!(body["haiku"], "small");
         assert!(body.get("sonnet").is_none());
+        assert!(body.get("contextWindows").is_none());
+    }
+
+    #[test]
+    fn slots_body_carries_a_known_window_with_the_same_write() {
+        let body = slots_body(
+            "or",
+            &[("opus", "vendor/alpha".to_string())],
+            &[("vendor/alpha".to_string(), 262_144)],
+        );
+        assert_eq!(body["contextWindows"]["vendor/alpha"], 262_144);
     }
 }

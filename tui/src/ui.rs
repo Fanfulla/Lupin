@@ -170,12 +170,17 @@ pub const SLOT_NAMES: [&str; 3] = ["opus", "sonnet", "haiku"];
 /// Slots editor (`m` on a profile row): the three slots edited in sequence.
 /// Values start as the current labels (a delegated slot shows `->profile` and
 /// typing replaces it); only what changed is sent, and never checked (the
-/// `use --opus` rule).
+/// `use --opus` rule). With a catalogue loaded the editor suggests while you
+/// type and Tab completes; without one it is the same plain editor as always.
 pub struct SlotsEdit {
     pub profile: String,
+    /// The profile's provider: what the catalogue fetch keys on.
+    pub provider: String,
     pub values: [String; 3],
     pub original: [String; 3],
     pub field: usize,
+    /// None until the fetch lands (or forever, when there is no catalogue).
+    pub catalog: Option<Vec<crate::api::CatalogModel>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -188,6 +193,7 @@ pub fn render(
     palette: bool,
     agents: Option<&AgentsEdit>,
     slots: Option<&SlotsEdit>,
+    quick: Option<&crate::QuickModel>,
     add_provider: Option<&AddProviderMode>,
 ) {
     // The portrait is worth 15 rows only where 15 rows are spare. Below that the
@@ -240,9 +246,90 @@ pub fn render(
     if let Some(edit) = slots {
         render_slots(f, edit, f.area());
     }
+    if let Some(q) = quick {
+        render_quick_model(f, q, f.area());
+    }
     if let Some(mode) = add_provider {
         render_add_provider(f, mode, f.area(), &snap.profile_names);
     }
+}
+
+/// The quick-model overlay (design 2026-08-13): pick one id, then choose the
+/// slots it lands on. The pick phase is the assisted input; the slot phase is
+/// three toggles, so its letters never collide with typing.
+fn render_quick_model(f: &mut Frame, q: &crate::QuickModel, area: Rect) {
+    let area = centred(area, 66, 60);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(format!(" try a model: {} ", q.profile), bold()));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let mut lines: Vec<Line> = Vec::new();
+    match &q.phase {
+        crate::QuickPhase::Loading => {
+            lines.push(Line::from(" loading the provider catalogue..."));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(" esc cancel", dim())));
+        }
+        crate::QuickPhase::Pick => {
+            let input_text = format!(" > {}", q.input.text);
+            lines.push(if q.input.cursor == 0 {
+                Line::from(Span::styled(
+                    input_text,
+                    Style::default().add_modifier(Modifier::REVERSED),
+                ))
+            } else {
+                Line::from(input_text)
+            });
+            for (i, m) in q.input.filtered().iter().enumerate() {
+                let text = crate::model_input::row_label(m);
+                lines.push(if q.input.cursor == i + 1 {
+                    Line::from(Span::styled(
+                        text,
+                        Style::default().add_modifier(Modifier::REVERSED),
+                    ))
+                } else {
+                    Line::from(text)
+                });
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                " type to search, paste an id   up/down pick   enter next   esc cancel",
+                dim(),
+            )));
+            lines.push(Line::from(Span::styled(
+                " an id outside the catalogue is written as given and never checked",
+                dim(),
+            )));
+        }
+        crate::QuickPhase::Slots {
+            id,
+            advisory,
+            include,
+            ..
+        } => {
+            lines.push(Line::from(format!(" model: {id}")));
+            if let Some(a) = advisory {
+                lines.push(Line::from(Span::styled(format!(" {a}"), dim())));
+            }
+            lines.push(Line::from(""));
+            for (i, name) in SLOT_NAMES.iter().enumerate() {
+                let marker = if include[i] { "[x]" } else { "[ ]" };
+                lines.push(Line::from(format!(
+                    " {marker} {name:6} {} -> {id}",
+                    q.current[i]
+                )));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                " o/s/h toggle a slot   enter apply   esc back",
+                dim(),
+            )));
+        }
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// The slots editor overlay: three fields, the active one highlighted, and the
@@ -271,15 +358,32 @@ fn render_slots(f: &mut Frame, edit: &SlotsEdit, area: Rect) {
             }
         })
         .collect();
+    // With a catalogue, the focused field's matches show as suggestions and
+    // Tab completes to the first: assistance, never a gate.
+    if let Some(catalog) = edit.catalog.as_deref() {
+        let matches =
+            crate::model_input::matches_for(catalog, &edit.values[edit.field], 4);
+        if !matches.is_empty() {
+            lines.push(Line::from(""));
+            for m in matches {
+                lines.push(Line::from(Span::styled(
+                    crate::model_input::row_label(m),
+                    dim(),
+                )));
+            }
+        }
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         " names are written as given and never checked: a wrong one fails in session",
         dim(),
     )));
-    lines.push(Line::from(Span::styled(
-        " type model   backspace edit   enter next/apply   up/down field   esc cancel",
-        dim(),
-    )));
+    let keys_hint = if edit.catalog.is_some() {
+        " type model   tab complete   backspace edit   enter next/apply   up/down field   esc cancel"
+    } else {
+        " type model   backspace edit   enter next/apply   up/down field   esc cancel"
+    };
+    lines.push(Line::from(Span::styled(keys_hint, dim())));
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
@@ -1092,7 +1196,7 @@ fn render_keys(f: &mut Frame, area: Rect, add_provider: Option<&AddProviderMode>
     }) {
         "  text input active   q types normally   ctrl-c quit"
     } else {
-        "  q quit   1-9/arrows+enter switch   d doctor   m models   : commands   o order   a agents   p add provider   r refresh"
+        "  q quit   1-9/arrows+enter switch   d doctor   t try model   m models   : commands   o order   a agents   p add provider   r refresh"
     };
     f.render_widget(Paragraph::new(Line::from(Span::styled(text, dim()))), area);
 }
@@ -1120,7 +1224,7 @@ mod tests {
 
     fn screen_sel(snap: &Snapshot, message: &str, selected: usize) -> String {
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, snap, message, selected, None, false, None, None, None))
+        term.draw(|f| render(f, snap, message, selected, None, false, None, None, None, None))
             .expect("draw");
         term.backend()
             .buffer()
@@ -1150,7 +1254,7 @@ mod tests {
             profile_names: Vec::new(),
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, Some(mode)))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, None, Some(mode)))
             .expect("draw");
         term.backend()
             .buffer()
@@ -1183,7 +1287,7 @@ mod tests {
             cursor: 0,
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, Some(&mode)))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, None, Some(&mode)))
             .expect("draw");
         let out = term
             .backend()
@@ -1205,6 +1309,7 @@ mod tests {
         };
         let edit = SlotsEdit {
             profile: "kimi".to_string(),
+            provider: "kimi".to_string(),
             values: [
                 "kimi-k3".to_string(),
                 "kimi-k3".to_string(),
@@ -1216,9 +1321,10 @@ mod tests {
                 "kimi-k2.6".to_string(),
             ],
             field: 1,
+            catalog: None,
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, Some(&edit), None))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, Some(&edit), None, None))
             .expect("draw");
         let out = term
             .backend()
@@ -1334,7 +1440,7 @@ mod tests {
             cursor: 0,
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, Some(&edit), None, None))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, Some(&edit), None, None, None))
             .expect("draw");
         let out = term
             .backend()
@@ -1434,7 +1540,7 @@ mod tests {
             profile_names: vec!["kimi-sub".to_string()],
         };
         let mut term = Terminal::new(TestBackend::new(20, 4)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, None))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, None, None))
             .expect("draw on a cramped screen");
     }
 
@@ -1523,7 +1629,7 @@ mod tests {
     /// the cursor highlight, drawn on the selected row.
     fn any_reversed(snap: &Snapshot, selected: usize) -> bool {
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, snap, "ready", selected, None, false, None, None, None))
+        term.draw(|f| render(f, snap, "ready", selected, None, false, None, None, None, None))
             .expect("draw");
         term.backend()
             .buffer()
@@ -1594,7 +1700,7 @@ mod tests {
         // The reversed cell's vertical position changes with `selected`.
         let y_of = |selected: usize| {
             let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-            term.draw(|f| render(f, &snap, "ready", selected, None, false, None, None, None))
+            term.draw(|f| render(f, &snap, "ready", selected, None, false, None, None, None, None))
                 .expect("draw");
             let buf = term.backend().buffer();
             let width = buf.area().width as usize;

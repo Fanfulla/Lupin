@@ -60,21 +60,10 @@ impl ModelInput {
     /// MAX_ROWS. An empty text shows the head of the catalogue: the list is
     /// browsable before the first keystroke.
     pub fn filtered(&self) -> Vec<&CatalogModel> {
-        let Some(catalog) = &self.catalog else {
-            return Vec::new();
-        };
-        let needle = self.text.trim().to_lowercase();
-        catalog
-            .iter()
-            .filter(|m| {
-                needle.is_empty()
-                    || m.id.to_lowercase().contains(&needle)
-                    || m.name
-                        .as_deref()
-                        .is_some_and(|n| n.to_lowercase().contains(&needle))
-            })
-            .take(MAX_ROWS)
-            .collect()
+        match &self.catalog {
+            Some(catalog) => matches_for(catalog, &self.text, MAX_ROWS),
+            None => Vec::new(),
+        }
     }
 
     /// What Enter takes: the highlighted catalogue row's id, or the typed
@@ -112,6 +101,33 @@ impl ModelInput {
             Some(format!("\"{id}\" is not in the provider's catalogue: written as given"))
         }
     }
+}
+
+/// The widget's one matching rule, shared with the slot editor's suggestion
+/// list: case-insensitive substring on id and display name. An empty text
+/// matches the head of the catalogue.
+pub fn matches_for<'a>(catalog: &'a [CatalogModel], text: &str, cap: usize) -> Vec<&'a CatalogModel> {
+    let needle = text.trim().to_lowercase();
+    catalog
+        .iter()
+        .filter(|m| {
+            needle.is_empty()
+                || m.id.to_lowercase().contains(&needle)
+                || m.name
+                    .as_deref()
+                    .is_some_and(|n| n.to_lowercase().contains(&needle))
+        })
+        .take(cap)
+        .collect()
+}
+
+/// The first catalogue id matching `text`: what Tab completes to in the slot
+/// editor. An empty text completes to nothing (Tab keeps its field gesture).
+pub fn first_match(catalog: &[CatalogModel], text: &str) -> Option<String> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    matches_for(catalog, text, 1).first().map(|m| m.id.clone())
 }
 
 /// `262144 -> "262k"`, `1000000 -> "1.0M"`: the compact window label for a row.
@@ -243,6 +259,17 @@ mod tests {
         assert_eq!(input.cursor, 0, "typing goes back to the text row");
         input.up();
         assert_eq!(input.cursor, 0);
+    }
+
+    #[test]
+    fn first_match_completes_only_from_real_text() {
+        let c = catalog();
+        assert_eq!(
+            super::first_match(&c, "beta"),
+            Some("vendor/beta".to_string())
+        );
+        assert_eq!(super::first_match(&c, "  "), None);
+        assert_eq!(super::first_match(&c, "nothing-like-this"), None);
     }
 
     #[test]
