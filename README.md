@@ -29,7 +29,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Node >= 20](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)
 ![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178c6)
-![tests](https://img.shields.io/badge/tests-803%20node%20%2B%2077%20rust-success)
+![tests](https://img.shields.io/badge/tests-828%20node%20%2B%20124%20rust-success)
 
 </div>
 
@@ -331,20 +331,29 @@ itself ships (it needs the Rust toolchain; without one it prints the manual
 command instead).
 
 Keys: `1`-`9` switch profile, arrows and `Enter` do the same on the highlighted
-row, **`d` runs the doctor on the highlighted profile**, **`m` aims its slots**
-(opus, sonnet and haiku edited in place, written as given and never checked:
-the profiles whose models only the account knows finally have a screen), **`:`
-opens the command palette**, `o` edits the failover order, **`a` opens agents
-mode**, `r` refreshes now, `q` quits.
+row, **`d` runs the doctor on the highlighted profile**, **`t` tries a model**
+(type, search the provider's catalogue or paste an id, then land it on the
+whole profile in one gesture, single slots excludable), **`m` aims its slots**
+(opus, sonnet and haiku edited in place, written as given and never checked;
+with a catalogue the focused field suggests while you type and `Tab`
+completes), **`:` opens the command palette**, `o` edits the failover order,
+**`a` opens agents mode**, `r` refreshes now, `q` quits.
+
+Providers that publish a model list (OpenRouter first) feed those inputs live:
+each row shows the served context window, tool support and price, the picked
+window lands in the profile's `contextWindows` in the same write, and an id
+outside the list is still written as given, with an advisory instead of a
+refusal. Pasting works everywhere a model id is typed.
 
 Agents mode is the subagent mixer on screen: it lists every agent route plus
 the conventional `subagents` row (shown even before it exists, so the first
 gesture is obvious), and on the selected row `1`-`9` aims it at that profile,
+`m` aims it at a model id (catalogue-assisted), `n` names a brand-new route,
 `x` clears it, `Enter` applies the whole table atomically through the control
-API, `Esc` throws the edit away. The daemon writes the config and hot-reloads
+API, `Esc` throws the edit away. After applying a named route the TUI offers
+to wire the agent file's `model:` line for you (explicit `y`, skippable, the
+route stays saved either way). The daemon writes the config and hot-reloads
 it, so a live Claude Code session picks the new routing up on its next request.
-Model-string targets and brand-new route names are one command away in
-`lupin agents set`, and the overlay says so rather than hiding the limit.
 
 The CLI exposes the same advanced routing without opening the dashboard:
 
@@ -381,7 +390,7 @@ every fact and shrinks the art. It needs a real terminal: it takes over the
 screen, so it will not do anything useful inside another tool's output pane.
 
 ```
-⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.3.0   the gentleman router
+⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.3.2   the gentleman router
 ⠈⢿⣿⣿⣿⣿⣿⣷⣖⠀⠀⠀⠀⠀⠀⠀  daemon up   127.0.0.1:3456
 ⠀⠴⢿⣿⣿⣿⣿⣿⣿⣀⠀⠀⠀⠀⠀⠀  active: kimi-sub  ->  k3
 ⠀⠀⠈⠛⢿⠿⣿⣿⣿⣿⣿⣶⣶⣶⣤⣄
