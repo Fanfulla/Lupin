@@ -158,10 +158,31 @@ fn bold() -> Style {
 }
 
 /// Agents mode (ADR-47): the table being edited and the cursor over it. A row
-/// with no target is unset: shown, and applied as a removal.
+/// with no target is unset: shown, and applied as a removal. The sub-modes
+/// (design 2026-08-13) carry the two inputs parity needed, the new-name
+/// prompt and the model target, plus the wire offer that follows an apply.
 pub struct AgentsEdit {
     pub rows: Vec<(String, Option<serde_json::Value>)>,
     pub cursor: usize,
+    pub mode: AgentsMode,
+    /// Route names whose target was set during THIS edit: the wire offer is
+    /// for what the user just aimed, never for rows that merely existed.
+    pub touched: Vec<String>,
+}
+
+pub enum AgentsMode {
+    Rows,
+    NewName {
+        value: String,
+    },
+    ModelTarget {
+        input: crate::model_input::ModelInput,
+    },
+    /// After a successful apply: the named routes just aimed, offered the
+    /// ADR-48 wire one at a time. `subagents` never queues (the env covers it).
+    WireOffer {
+        queue: Vec<String>,
+    },
 }
 
 /// The slot order every surface agrees on (SPEC-CLI §1).
@@ -711,9 +732,9 @@ fn pick_list_lines(none_label: &str, candidates: &[String], cursor: usize) -> Ve
 }
 
 /// The agents-mode overlay: one row per route, target by name (the same
-/// `->profile` notation the slots use), the cursor reversed. Model targets and
-/// new route names are CLI gestures, and the footer says so instead of hiding
-/// the limit.
+/// `->profile` notation the slots use), the cursor reversed. Since the design
+/// of 2026-08-13 this surface has full parity: new names (`n`), model targets
+/// (`m`, catalogue-assisted) and the wire offer after an apply.
 fn render_agents(f: &mut Frame, edit: &AgentsEdit, area: Rect) {
     let area = centred(area, 66, 60);
     let block = Block::default()
@@ -733,7 +754,7 @@ fn render_agents(f: &mut Frame, edit: &AgentsEdit, area: Rect) {
                 .map(crate::config::slot_label)
                 .unwrap_or_else(|| "(unset)".to_string());
             let text = format!(" {name:<20} {label}");
-            if i == edit.cursor {
+            if i == edit.cursor && matches!(edit.mode, AgentsMode::Rows) {
                 Line::from(Span::styled(
                     text,
                     Style::default().add_modifier(Modifier::REVERSED),
@@ -743,14 +764,66 @@ fn render_agents(f: &mut Frame, edit: &AgentsEdit, area: Rect) {
             }
         })
         .collect();
-    lines.push(Line::from(Span::styled(
-        " 1-9 aim at profile   x clear   enter apply   esc cancel",
-        dim(),
-    )));
-    lines.push(Line::from(Span::styled(
-        " models and new names: `lupin agents set`",
-        dim(),
-    )));
+    match &edit.mode {
+        AgentsMode::Rows => {
+            lines.push(Line::from(Span::styled(
+                " 1-9 aim at profile   m model target   n new route   x clear   enter apply",
+                dim(),
+            )));
+            lines.push(Line::from(Span::styled(" esc cancel", dim())));
+        }
+        AgentsMode::NewName { value } => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!(" new route name: {value}_"),
+                Style::default().add_modifier(Modifier::REVERSED),
+            )));
+            lines.push(Line::from(Span::styled(
+                " letters, digits, . _ - (max 32)   enter confirms   esc back",
+                dim(),
+            )));
+        }
+        AgentsMode::ModelTarget { input } => {
+            lines.push(Line::from(""));
+            let text = format!(" model target > {}", input.text);
+            lines.push(if input.cursor == 0 {
+                Line::from(Span::styled(
+                    text,
+                    Style::default().add_modifier(Modifier::REVERSED),
+                ))
+            } else {
+                Line::from(text)
+            });
+            for (i, m) in input.filtered().iter().enumerate() {
+                let row = crate::model_input::row_label(m);
+                lines.push(if input.cursor == i + 1 {
+                    Line::from(Span::styled(
+                        row,
+                        Style::default().add_modifier(Modifier::REVERSED),
+                    ))
+                } else {
+                    Line::from(row)
+                });
+            }
+            lines.push(Line::from(Span::styled(
+                " type to search, paste an id   up/down pick   enter sets   esc back",
+                dim(),
+            )));
+        }
+        AgentsMode::WireOffer { queue } => {
+            if let Some(name) = queue.first() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!(" wire {name}? writes `model: claude-lupin-agent:{name}` into the agent's file"),
+                    bold(),
+                )));
+                lines.push(Line::from(Span::styled(
+                    " y wire   n/esc skip (the route is saved either way)",
+                    dim(),
+                )));
+            }
+        }
+    }
     f.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -1438,6 +1511,8 @@ mod tests {
                 ("subagents".to_string(), None),
             ],
             cursor: 0,
+            mode: AgentsMode::Rows,
+            touched: Vec::new(),
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
         term.draw(|f| render(f, &snap, "ready", 0, None, false, Some(&edit), None, None, None))
@@ -1456,7 +1531,10 @@ mod tests {
         // gesture.
         assert!(out.contains("subagents"), "{out}");
         assert!(out.contains("(unset)"), "{out}");
-        assert!(out.contains("lupin agents set"), "{out}");
+        // Full parity since 2026-08-13: the footer offers the gestures
+        // instead of pointing at the CLI.
+        assert!(out.contains("m model target"), "{out}");
+        assert!(out.contains("n new route"), "{out}");
     }
 
     fn config() -> LupinConfig {

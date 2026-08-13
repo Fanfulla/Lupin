@@ -729,6 +729,77 @@ pub fn set_agents(
     }
 }
 
+/// What a wire wrote (ADR-48 over the control API, design 2026-08-13): the
+/// file, the previous value when the field existed, and what it says now.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct WireOutcome {
+    pub file: String,
+    #[serde(default)]
+    pub previous: Option<String>,
+    pub value: String,
+}
+
+#[derive(Deserialize)]
+struct WireEnvelope {
+    ok: bool,
+    #[serde(default)]
+    file: Option<String>,
+    #[serde(default)]
+    previous: Option<String>,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    hint: Option<String>,
+}
+
+fn parse_wire(status: u16, body: &str) -> Result<WireOutcome, String> {
+    let parsed: WireEnvelope = serde_json::from_str(body).map_err(|_| http_error(status))?;
+    if !(200..300).contains(&status) || !parsed.ok {
+        let error = parsed.error.unwrap_or_else(|| http_error(status));
+        return Err(match parsed.hint {
+            Some(hint) => format!("{error}. Add the line yourself: {hint}"),
+            None => error,
+        });
+    }
+    match (parsed.file, parsed.value) {
+        (Some(file), Some(value)) => Ok(WireOutcome {
+            file,
+            previous: parsed.previous,
+            value,
+        }),
+        _ => Err(http_error(status)),
+    }
+}
+
+/// The ADR-48 wire gesture: the daemon finds the agent file and edits its one
+/// frontmatter field. The TUI's cwd rides along, because the daemon's own cwd
+/// is the state directory (ADR-49) and the project-level `.claude/agents`
+/// lookup would miss without it.
+pub fn wire_agent(snap: &Snapshot, name: &str) -> Result<WireOutcome, String> {
+    let Some(config) = &snap.config else {
+        return Err("no config".to_string());
+    };
+    let url = format!("http://127.0.0.1:{}/v1/lupin/agents/wire", config.port);
+    let mut body = serde_json::json!({ "name": name });
+    if let Some(cwd) = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+    {
+        body["cwd"] = serde_json::json!(cwd);
+    }
+    let res = control_client()?
+        .post(&url)
+        .header("authorization", format!("Bearer {}", config.local_token))
+        .json(&body)
+        .send()
+        .map_err(|_| "daemon not answering (lupin run -- claude starts it)".to_string())?;
+    let status = res.status().as_u16();
+    let body = res.text().unwrap_or_default();
+    parse_wire(status, &body)
+}
+
 pub fn switch_profile(snap: &Snapshot, name: &str) -> Result<(), String> {
     let Some(config) = &snap.config else {
         return Err("no config".to_string());
@@ -878,6 +949,24 @@ mod tests {
 
         assert!(rows[2].import_available);
         assert!(!rows[3].import_available, "absent means not importable");
+    }
+
+    #[test]
+    fn wire_parses_the_outcome_and_keeps_the_paste_by_hand_hint_on_failure() {
+        let ok = super::parse_wire(
+            200,
+            r#"{"ok":true,"file":"C:/proj/.claude/agents/scout.md","previous":"sonnet","value":"claude-lupin-agent:scout"}"#,
+        )
+        .expect("outcome");
+        assert_eq!(ok.previous.as_deref(), Some("sonnet"));
+        assert_eq!(ok.value, "claude-lupin-agent:scout");
+        let err = super::parse_wire(
+            404,
+            r#"{"ok":false,"error":"no agent definition found for \"ghost\"","hint":"model: claude-lupin-agent:ghost"}"#,
+        )
+        .expect_err("a miss is an error");
+        assert!(err.contains("no agent definition found"), "{err}");
+        assert!(err.contains("model: claude-lupin-agent:ghost"), "{err}");
     }
 
     #[test]

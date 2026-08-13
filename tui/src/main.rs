@@ -198,6 +198,7 @@ pub(crate) struct QuickModel {
 enum CatalogSink {
     Quick,
     Slots,
+    Agents,
 }
 
 fn main() -> io::Result<()> {
@@ -331,6 +332,14 @@ fn run(
             let provider = match &sink {
                 CatalogSink::Quick => quick.as_ref().map(|q| q.provider.clone()),
                 CatalogSink::Slots => slots_edit.as_ref().map(|e| e.provider.clone()),
+                // An agent's model target is "a model of the serving profile"
+                // (§4decies), so the ACTIVE profile's provider is the one
+                // whose catalogue helps here.
+                CatalogSink::Agents => snap
+                    .config
+                    .as_ref()
+                    .and_then(|c| c.profiles.get(&c.active_profile))
+                    .map(|p| p.provider.clone()),
             };
             let fetched = provider.and_then(|p| {
                 onboarding_identity(&snap, bootstrap_identity)
@@ -363,6 +372,19 @@ fn run(
                                 "aim slots for {}: tab completes from the catalogue",
                                 edit.profile
                             );
+                        }
+                    }
+                }
+                CatalogSink::Agents => {
+                    if let Some(edit) = agents_edit.as_mut() {
+                        if let ui::AgentsMode::ModelTarget { input } = &mut edit.mode {
+                            input.catalog = fetched;
+                            message = if got {
+                                "model target: type to search the catalogue, or paste an id"
+                                    .to_string()
+                            } else {
+                                "no catalogue: paste or type the model id".to_string()
+                            };
                         }
                     }
                 }
@@ -403,6 +425,7 @@ fn run(
                     add_provider.as_mut(),
                     slots_edit.as_mut(),
                     quick.as_mut(),
+                    agents_edit.as_mut(),
                     &mut message,
                 );
                 continue;
@@ -543,54 +566,61 @@ fn run(
                 // Agents mode swallows its own keys the same way: a digit here
                 // aims the selected route, never switches the active profile.
                 if let Some(edit) = agents_edit.as_mut() {
-                    match key.code {
-                        KeyCode::Esc => {
+                    match handle_agents_key(edit, key.code, &snap.profile_names) {
+                        AgentsAction::Stay => {}
+                        AgentsAction::Note(note) => message = note,
+                        AgentsAction::Cancel(reason) => {
                             agents_edit = None;
-                            message = "agents cancelled".to_string();
+                            message = reason;
                         }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            edit.cursor = edit.cursor.saturating_sub(1);
+                        AgentsAction::ModelTargetOpened => {
+                            catalog_pending = Some(CatalogSink::Agents);
+                            message = "loading the catalogue for the model target...".to_string();
                         }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            if edit.cursor + 1 < edit.rows.len() {
-                                edit.cursor += 1;
-                            }
-                        }
-                        KeyCode::Char('x') => {
-                            if let Some(row) = edit.rows.get_mut(edit.cursor) {
-                                row.1 = None;
-                                message = format!("{}: unset (enter applies)", row.0);
-                            }
-                        }
-                        KeyCode::Char(d) if d.is_ascii_digit() && d != '0' => {
-                            let idx = (d as usize) - ('1' as usize);
-                            match snap.profile_names.get(idx).cloned() {
-                                // Words, never silence: a swallowed keypress is
-                                // indistinguishable from a broken keyboard.
-                                None => message = format!("there is no profile {}", idx + 1),
-                                Some(name) => {
-                                    if let Some(row) = edit.rows.get_mut(edit.cursor) {
-                                        row.1 = Some(serde_json::json!({ "profile": name }));
-                                        message = format!(
-                                            "{} -> {name} (enter applies, esc cancels)",
-                                            row.0
-                                        );
+                        AgentsAction::Apply { table, wire_queue } => {
+                            match api::set_agents(&snap, &table) {
+                                Ok(()) => {
+                                    message = if table.is_empty() {
+                                        "agent routes cleared".to_string()
+                                    } else {
+                                        format!("agent routes applied ({})", table.len())
+                                    };
+                                    if wire_queue.is_empty() {
+                                        agents_edit = None;
+                                    } else {
+                                        edit.mode = ui::AgentsMode::WireOffer { queue: wire_queue };
                                     }
                                 }
+                                Err(e) => {
+                                    message = format!("agent routes failed: {e}");
+                                    agents_edit = None;
+                                }
                             }
-                        }
-                        KeyCode::Enter => {
-                            let table = agents_table(&edit.rows);
-                            message = match api::set_agents(&snap, &table) {
-                                Ok(()) if table.is_empty() => "agent routes cleared".to_string(),
-                                Ok(()) => format!("agent routes applied ({})", table.len()),
-                                Err(e) => format!("agent routes failed: {e}"),
-                            };
-                            agents_edit = None;
                             snap = api::snapshot(cfg_path, bootstrap_identity);
                             last = Instant::now();
                         }
-                        _ => {}
+                        AgentsAction::Wire { name, last: is_last } => {
+                            message = match api::wire_agent(&snap, &name) {
+                                Ok(wired) => format!(
+                                    "wired {}: model: {} -> {}",
+                                    wired.file,
+                                    wired.previous.unwrap_or_else(|| "(absent)".to_string()),
+                                    wired.value
+                                ),
+                                Err(e) => format!("wire failed: {e}"),
+                            };
+                            if is_last {
+                                agents_edit = None;
+                            }
+                        }
+                        AgentsAction::SkipWire { name, last: is_last } => {
+                            message = format!(
+                                "not wired: put `model: claude-lupin-agent:{name}` in the agent file when you want it"
+                            );
+                            if is_last {
+                                agents_edit = None;
+                            }
+                        }
                     }
                     continue;
                 }
@@ -682,9 +712,11 @@ fn run(
                         agents_edit = Some(ui::AgentsEdit {
                             rows: agent_rows(snap.config.as_ref()),
                             cursor: 0,
+                            mode: ui::AgentsMode::Rows,
+                            touched: Vec::new(),
                         });
                         message =
-                            "agents mode: 1-9 aims the selected route at a profile, x clears, enter applies, esc cancels"
+                            "agents mode: 1-9 aims at a profile, m at a model, n names a new route, x clears, enter applies"
                                 .to_string();
                     }
                     KeyCode::Char('r') => {
@@ -957,6 +989,213 @@ fn quick_model_for(snap: &api::Snapshot, selected: usize) -> Option<QuickModel> 
     })
 }
 
+/// What one key does to the agents editor. Pure, like the slots handler, so
+/// the whole parity surface (new names, model targets, the wire offer) is
+/// testable without a terminal.
+pub(crate) enum AgentsAction {
+    Stay,
+    Note(String),
+    Cancel(String),
+    /// `m` opened the model target: the caller owes it a catalogue fetch.
+    ModelTargetOpened,
+    Apply {
+        table: std::collections::BTreeMap<String, serde_json::Value>,
+        /// Named routes aimed during this edit, offered the ADR-48 wire.
+        wire_queue: Vec<String>,
+    },
+    Wire {
+        name: String,
+        last: bool,
+    },
+    SkipWire {
+        name: String,
+        last: bool,
+    },
+}
+
+pub(crate) fn handle_agents_key(
+    edit: &mut ui::AgentsEdit,
+    key: KeyCode,
+    profile_names: &[String],
+) -> AgentsAction {
+    match &mut edit.mode {
+        ui::AgentsMode::NewName { value } => match key {
+            KeyCode::Esc => {
+                edit.mode = ui::AgentsMode::Rows;
+                AgentsAction::Note("new route cancelled".to_string())
+            }
+            KeyCode::Backspace => {
+                value.pop();
+                AgentsAction::Stay
+            }
+            KeyCode::Enter => {
+                let name = value.clone();
+                if name.is_empty() {
+                    return AgentsAction::Note("type a route name first (esc cancels)".to_string());
+                }
+                if edit.rows.iter().any(|(n, _)| *n == name) {
+                    return AgentsAction::Note(format!("route \"{name}\" already exists"));
+                }
+                edit.rows.push((name.clone(), None));
+                edit.cursor = edit.rows.len() - 1;
+                edit.mode = ui::AgentsMode::Rows;
+                AgentsAction::Note(format!(
+                    "route {name} added: aim it (1-9 profile, m model), enter applies"
+                ))
+            }
+            // The same charset AGENT_NAME_RE accepts server-side: filtering at
+            // the keystroke keeps the field always valid.
+            KeyCode::Char(c) if is_account_label_char(c) => {
+                if value.chars().count() < ACCOUNT_LABEL_MAX {
+                    value.push(c);
+                }
+                AgentsAction::Stay
+            }
+            _ => AgentsAction::Stay,
+        },
+        ui::AgentsMode::ModelTarget { input } => match key {
+            KeyCode::Esc => {
+                edit.mode = ui::AgentsMode::Rows;
+                AgentsAction::Note("model target cancelled".to_string())
+            }
+            KeyCode::Up => {
+                input.up();
+                AgentsAction::Stay
+            }
+            KeyCode::Down => {
+                input.down();
+                AgentsAction::Stay
+            }
+            KeyCode::Backspace => {
+                input.backspace();
+                AgentsAction::Stay
+            }
+            KeyCode::Enter => {
+                let id = input.accept();
+                if id.is_empty() {
+                    return AgentsAction::Note("type or paste a model id first".to_string());
+                }
+                let advisory = input.advisory();
+                let Some(row) = edit.rows.get_mut(edit.cursor) else {
+                    edit.mode = ui::AgentsMode::Rows;
+                    return AgentsAction::Note("no route selected".to_string());
+                };
+                row.1 = Some(serde_json::json!(id));
+                let name = row.0.clone();
+                edit.touched.push(name.clone());
+                edit.mode = ui::AgentsMode::Rows;
+                let mut note = format!("{name} -> {id} (enter applies, esc cancels)");
+                if let Some(a) = advisory {
+                    note.push_str(&format!(" ({a})"));
+                }
+                AgentsAction::Note(note)
+            }
+            KeyCode::Char(c) => {
+                input.type_char(c);
+                AgentsAction::Stay
+            }
+            _ => AgentsAction::Stay,
+        },
+        ui::AgentsMode::WireOffer { queue } => match key {
+            KeyCode::Char('y') => match queue.first().cloned() {
+                None => AgentsAction::Cancel("done".to_string()),
+                Some(name) => {
+                    queue.remove(0);
+                    AgentsAction::Wire {
+                        name,
+                        last: queue.is_empty(),
+                    }
+                }
+            },
+            KeyCode::Char('n') | KeyCode::Esc => match queue.first().cloned() {
+                None => AgentsAction::Cancel("done".to_string()),
+                Some(name) => {
+                    queue.remove(0);
+                    AgentsAction::SkipWire {
+                        name,
+                        last: queue.is_empty(),
+                    }
+                }
+            },
+            _ => AgentsAction::Stay,
+        },
+        ui::AgentsMode::Rows => match key {
+            KeyCode::Esc => AgentsAction::Cancel("agents cancelled".to_string()),
+            KeyCode::Up | KeyCode::Char('k') => {
+                edit.cursor = edit.cursor.saturating_sub(1);
+                AgentsAction::Stay
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if edit.cursor + 1 < edit.rows.len() {
+                    edit.cursor += 1;
+                }
+                AgentsAction::Stay
+            }
+            KeyCode::Char('x') => match edit.rows.get_mut(edit.cursor) {
+                None => AgentsAction::Stay,
+                Some(row) => {
+                    row.1 = None;
+                    AgentsAction::Note(format!("{}: unset (enter applies)", row.0))
+                }
+            },
+            KeyCode::Char('n') => {
+                edit.mode = ui::AgentsMode::NewName {
+                    value: String::new(),
+                };
+                AgentsAction::Note(
+                    "name the new route: letters, digits, . _ - (max 32), enter confirms"
+                        .to_string(),
+                )
+            }
+            KeyCode::Char('m') => {
+                if edit.rows.get(edit.cursor).is_none() {
+                    return AgentsAction::Note("no route selected".to_string());
+                }
+                edit.mode = ui::AgentsMode::ModelTarget {
+                    input: model_input::ModelInput::new(None),
+                };
+                AgentsAction::ModelTargetOpened
+            }
+            KeyCode::Char(d) if d.is_ascii_digit() && d != '0' => {
+                let idx = (d as usize) - ('1' as usize);
+                match profile_names.get(idx).cloned() {
+                    // Words, never silence: a swallowed keypress is
+                    // indistinguishable from a broken keyboard.
+                    None => AgentsAction::Note(format!("there is no profile {}", idx + 1)),
+                    Some(name) => match edit.rows.get_mut(edit.cursor) {
+                        None => AgentsAction::Stay,
+                        Some(row) => {
+                            row.1 = Some(serde_json::json!({ "profile": name }));
+                            let route = row.0.clone();
+                            edit.touched.push(route.clone());
+                            AgentsAction::Note(format!(
+                                "{route} -> {name} (enter applies, esc cancels)"
+                            ))
+                        }
+                    },
+                }
+            }
+            KeyCode::Enter => {
+                let table = agents_table(&edit.rows);
+                // The wire covers what this edit aimed: named routes only
+                // (`subagents` rides the env, ADR-47), still present in the
+                // applied table, once each.
+                let mut wire_queue: Vec<String> = Vec::new();
+                for name in &edit.touched {
+                    if name != SUBAGENTS_ROUTE
+                        && table.contains_key(name)
+                        && !wire_queue.contains(name)
+                    {
+                        wire_queue.push(name.clone());
+                    }
+                }
+                AgentsAction::Apply { table, wire_queue }
+            }
+            _ => AgentsAction::Stay,
+        },
+    }
+}
+
 /// What one key does to the quick-model editor. Pure, like the slots handler.
 pub(crate) enum QuickAction {
     Stay,
@@ -1090,6 +1329,7 @@ fn handle_paste(
     add_provider: Option<&mut AddProviderMode>,
     slots_edit: Option<&mut ui::SlotsEdit>,
     quick: Option<&mut QuickModel>,
+    agents_edit: Option<&mut ui::AgentsEdit>,
     message: &mut String,
 ) {
     let clean: String = text.chars().filter(|c| !c.is_control()).collect();
@@ -1114,6 +1354,20 @@ fn handle_paste(
     if let Some(q) = quick {
         if matches!(q.phase, QuickPhase::Pick) {
             q.input.paste(&clean);
+        }
+        return;
+    }
+    if let Some(edit) = agents_edit {
+        match &mut edit.mode {
+            ui::AgentsMode::ModelTarget { input } => input.paste(&clean),
+            ui::AgentsMode::NewName { value } => {
+                for c in clean.chars() {
+                    if is_account_label_char(c) && value.chars().count() < ACCOUNT_LABEL_MAX {
+                        value.push(c);
+                    }
+                }
+            }
+            _ => *message = "nothing here takes pasted text".to_string(),
         }
         return;
     }
@@ -3124,6 +3378,121 @@ mod tests {
             handle_quick_key(&mut q, KeyCode::Enter),
             QuickAction::Note(_)
         ));
+    }
+
+    fn agents_edit_rows() -> ui::AgentsEdit {
+        ui::AgentsEdit {
+            rows: vec![("subagents".to_string(), None)],
+            cursor: 0,
+            mode: ui::AgentsMode::Rows,
+            touched: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn agents_n_names_a_new_route_with_the_agent_charset_only() {
+        use super::{handle_agents_key, AgentsAction};
+        let mut edit = agents_edit_rows();
+        handle_agents_key(&mut edit, KeyCode::Char('n'), &[]);
+        assert!(matches!(edit.mode, ui::AgentsMode::NewName { .. }));
+        for c in "sc out!".chars() {
+            handle_agents_key(&mut edit, KeyCode::Char(c), &[]);
+        }
+        match handle_agents_key(&mut edit, KeyCode::Enter, &[]) {
+            AgentsAction::Note(note) => assert!(note.contains("route scout added"), "{note}"),
+            _ => panic!("expected the added note"),
+        }
+        assert_eq!(edit.rows.len(), 2);
+        assert_eq!(edit.rows[1].0, "scout");
+        assert_eq!(edit.cursor, 1, "the new row is selected");
+    }
+
+    #[test]
+    fn agents_duplicate_or_empty_names_answer_in_words() {
+        use super::{handle_agents_key, AgentsAction};
+        let mut edit = agents_edit_rows();
+        handle_agents_key(&mut edit, KeyCode::Char('n'), &[]);
+        assert!(matches!(
+            handle_agents_key(&mut edit, KeyCode::Enter, &[]),
+            AgentsAction::Note(_)
+        ));
+        for c in "subagents".chars() {
+            handle_agents_key(&mut edit, KeyCode::Char(c), &[]);
+        }
+        match handle_agents_key(&mut edit, KeyCode::Enter, &[]) {
+            AgentsAction::Note(note) => assert!(note.contains("already exists"), "{note}"),
+            _ => panic!("expected the duplicate note"),
+        }
+    }
+
+    #[test]
+    fn agents_model_target_sets_the_row_and_the_apply_queues_the_wire() {
+        use super::{handle_agents_key, AgentsAction};
+        let mut edit = agents_edit_rows();
+        edit.rows.push(("scout".to_string(), None));
+        edit.cursor = 1;
+        assert!(matches!(
+            handle_agents_key(&mut edit, KeyCode::Char('m'), &[]),
+            AgentsAction::ModelTargetOpened
+        ));
+        for c in "vendor/alpha".chars() {
+            handle_agents_key(&mut edit, KeyCode::Char(c), &[]);
+        }
+        handle_agents_key(&mut edit, KeyCode::Enter, &[]);
+        assert_eq!(
+            edit.rows[1].1,
+            Some(serde_json::json!("vendor/alpha")),
+            "the model target lands on the row"
+        );
+        match handle_agents_key(&mut edit, KeyCode::Enter, &[]) {
+            AgentsAction::Apply { table, wire_queue } => {
+                assert_eq!(table.get("scout"), Some(&serde_json::json!("vendor/alpha")));
+                assert_eq!(wire_queue, vec!["scout".to_string()]);
+            }
+            _ => panic!("expected an apply"),
+        }
+    }
+
+    #[test]
+    fn agents_subagents_never_queues_for_the_wire() {
+        use super::{handle_agents_key, AgentsAction};
+        let names = ["p1".to_string()];
+        let mut edit = agents_edit_rows();
+        handle_agents_key(&mut edit, KeyCode::Char('1'), &names);
+        assert_eq!(
+            edit.rows[0].1,
+            Some(serde_json::json!({"profile": "p1"})),
+            "the delegation lands on the subagents row"
+        );
+        match handle_agents_key(&mut edit, KeyCode::Enter, &names) {
+            AgentsAction::Apply { wire_queue, .. } => {
+                assert!(wire_queue.is_empty(), "subagents rides the env, never the wire");
+            }
+            _ => panic!("expected an apply"),
+        }
+    }
+
+    #[test]
+    fn agents_wire_offer_pops_the_queue_on_y_and_n() {
+        use super::{handle_agents_key, AgentsAction};
+        let mut edit = agents_edit_rows();
+        edit.mode = ui::AgentsMode::WireOffer {
+            queue: vec!["a".to_string(), "b".to_string()],
+        };
+        match handle_agents_key(&mut edit, KeyCode::Char('y'), &[]) {
+            AgentsAction::Wire { name, last } => {
+                assert_eq!(name, "a");
+                assert!(!last);
+            }
+            _ => panic!("expected a wire"),
+        }
+        match handle_agents_key(&mut edit, KeyCode::Char('n'), &[]) {
+            AgentsAction::SkipWire { name, last } => {
+                assert_eq!(name, "b");
+                assert!(last, "the queue is drained");
+            }
+            _ => panic!("expected a skip"),
+        }
     }
 
     #[test]
