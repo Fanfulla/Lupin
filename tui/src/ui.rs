@@ -1021,24 +1021,24 @@ fn render_header(f: &mut Frame, snap: &Snapshot, area: Rect, art: &[&str]) {
         ]),
     ];
     // Free-tier honesty (M6b): a line only when the daemon KNOWS it is free.
-    if let Some(tier) = snap.health.as_ref().and_then(|h| h.tier.as_ref()) {
-        if tier.free == Some(true) {
-            let upgrade = tier
-                .upgrade
-                .as_ref()
-                .map(|u| format!("  paid plan: {u}"))
-                .unwrap_or_default();
-            facts.push(Line::from(vec![
-                Span::styled(
-                    "FREE tier",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" (free models, free limits)", dim()),
-                Span::styled(upgrade, dim()),
-            ]));
-        }
+    if let Some(tier) = snap.health.as_ref().and_then(|h| h.tier.as_ref())
+        && tier.free == Some(true)
+    {
+        let upgrade = tier
+            .upgrade
+            .as_ref()
+            .map(|u| format!("  paid plan: {u}"))
+            .unwrap_or_default();
+        facts.push(Line::from(vec![
+            Span::styled(
+                "FREE tier",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" (free models, free limits)", dim()),
+            Span::styled(upgrade, dim()),
+        ]));
     }
     f.render_widget(Paragraph::new(facts), cols[1]);
 }

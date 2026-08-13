@@ -103,10 +103,10 @@ impl LogLine {
         if let Some(w) = self.retry_after_ms {
             parts.push(format!("waited:{w}ms"));
         }
-        if let Some(d) = &self.dialect {
-            if !d.is_empty() {
-                parts.push(format!("dialect:{}", d.join("+")));
-            }
+        if let Some(d) = &self.dialect
+            && !d.is_empty()
+        {
+            parts.push(format!("dialect:{}", d.join("+")));
         }
         if self.edit_hint == Some(true) {
             parts.push("editHint".to_string());

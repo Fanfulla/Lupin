@@ -386,16 +386,16 @@ fn run(
                     }
                 }
                 CatalogSink::Agents => {
-                    if let Some(edit) = agents_edit.as_mut() {
-                        if let ui::AgentsMode::ModelTarget { input } = &mut edit.mode {
-                            input.catalog = fetched;
-                            message = if got {
-                                "model target: type to search the catalogue, or paste an id"
-                                    .to_string()
-                            } else {
-                                "no catalogue: paste or type the model id".to_string()
-                            };
-                        }
+                    if let Some(edit) = agents_edit.as_mut()
+                        && let ui::AgentsMode::ModelTarget { input } = &mut edit.mode
+                    {
+                        input.catalog = fetched;
+                        message = if got {
+                            "model target: type to search the catalogue, or paste an id"
+                                .to_string()
+                        } else {
+                            "no catalogue: paste or type the model id".to_string()
+                        };
                     }
                 }
             }
@@ -485,10 +485,10 @@ fn run(
                                         e.args.iter().map(|a| (*a).to_string()).collect();
                                     // The doctor grades a profile, and the one
                                     // on screen is the one the user means.
-                                    if e.args.first() == Some(&"doctor") {
-                                        if let Some(name) = snap.profile_names.get(selected) {
-                                            args.push(name.clone());
-                                        }
+                                    if e.args.first() == Some(&"doctor")
+                                        && let Some(name) = snap.profile_names.get(selected)
+                                    {
+                                        args.push(name.clone());
                                     }
                                     message = start_job(&mut job, e.label, &args);
                                 }
