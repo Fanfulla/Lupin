@@ -80,6 +80,26 @@ pub struct LocalModel {
     pub context_too_small: bool,
 }
 
+/// One model of a hosted provider's published catalogue (design 2026-08-13),
+/// as `/v1/lupin/discover-catalog` normalizes it. It informs the assisted
+/// input; it never gates a write (ADR-42).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogModel {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub supports_tools: Option<bool>,
+    /// USD per token, as the provider publishes it.
+    #[serde(default)]
+    pub prompt_price: Option<f64>,
+    #[serde(default)]
+    pub completion_price: Option<f64>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum LoginStatus {
@@ -289,6 +309,49 @@ pub fn discover_local(
     let status = res.status().as_u16();
     let body = res.text().unwrap_or_default();
     parse_discover_local(status, &body)
+}
+
+/// The hosted twin of `discover_local` (design 2026-08-13): the provider's
+/// published catalogue, normalized and cached daemon-side. A 404 (provider
+/// without a catalogue) and a 502 (catalogue unreachable) both come back as
+/// Err: the caller degrades to a plain input, never to an error state.
+pub fn discover_catalog(
+    identity: &BootstrapIdentity,
+    provider_id: &str,
+) -> Result<Vec<CatalogModel>, String> {
+    let url = format!("http://127.0.0.1:{}/v1/lupin/discover-catalog", identity.port);
+    let body = serde_json::json!({ "providerId": provider_id });
+    // The daemon's first fetch goes upstream (10s bound server-side), so this
+    // deserves the generous client, not the 1.5s control one.
+    let res = setup_key_client()?
+        .post(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", identity.local_token),
+        )
+        .json(&body)
+        .send()
+        .map_err(|_| daemon_not_answering())?;
+    let status = res.status().as_u16();
+    let body = res.text().unwrap_or_default();
+    parse_discover_catalog(status, &body)
+}
+
+#[derive(Deserialize)]
+struct CatalogEnvelope {
+    ok: bool,
+    #[serde(default)]
+    models: Vec<CatalogModel>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn parse_discover_catalog(status: u16, body: &str) -> Result<Vec<CatalogModel>, String> {
+    let parsed: CatalogEnvelope = serde_json::from_str(body).map_err(|_| http_error(status))?;
+    if !(200..300).contains(&status) || !parsed.ok {
+        return Err(parsed.error.unwrap_or_else(|| http_error(status)));
+    }
+    Ok(parsed.models)
 }
 
 /// The picks `setup-local` writes into the new profile.
@@ -674,9 +737,10 @@ pub fn switch_profile(snap: &Snapshot, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        discover_local, logout, parse_discover_local, parse_login_poll, parse_login_start,
-        parse_providers, parse_setup_key, parse_setup_local, set_failover, setup_key, setup_local,
-        slots_body, start_login, AuthKind, Health, LoginStatus, SetupKeyOptions, SetupLocalRequest,
+        discover_local, logout, parse_discover_catalog, parse_discover_local, parse_login_poll,
+        parse_login_start, parse_providers, parse_setup_key, parse_setup_local, set_failover,
+        setup_key, setup_local, slots_body, start_login, AuthKind, Health, LoginStatus,
+        SetupKeyOptions, SetupLocalRequest,
     };
     use crate::config::BootstrapIdentity;
     use std::io::{Read, Write};
@@ -796,6 +860,22 @@ mod tests {
 
         assert!(rows[2].import_available);
         assert!(!rows[3].import_available, "absent means not importable");
+    }
+
+    #[test]
+    fn discover_catalog_parses_models_and_failures() {
+        let ok = parse_discover_catalog(
+            200,
+            r#"{"ok":true,"models":[{"id":"vendor/alpha","name":"Alpha","contextWindow":100000,"supportsTools":true,"promptPrice":0.000001,"completionPrice":0.000002}]}"#,
+        )
+        .expect("models");
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].id, "vendor/alpha");
+        assert_eq!(ok[0].context_window, Some(100_000));
+        assert_eq!(ok[0].supports_tools, Some(true));
+        let err = parse_discover_catalog(502, r#"{"ok":false,"error":"catalogue unreachable"}"#);
+        assert_eq!(err, Err("catalogue unreachable".to_string()));
+        assert!(parse_discover_catalog(200, "not json").is_err());
     }
 
     #[test]

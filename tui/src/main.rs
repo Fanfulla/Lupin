@@ -13,9 +13,12 @@ mod api;
 mod config;
 mod job;
 mod logtail;
+mod model_input;
 mod ui;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -191,20 +194,25 @@ fn main() -> io::Result<()> {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
         default_hook(info);
     }));
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    // Best-effort on purpose: crossterm cannot enable bracketed paste on the
+    // Windows console, where a paste already arrives as a burst of key events.
+    // Where it works (every Unix terminal), a paste lands as ONE atomic
+    // Event::Paste instead; losing it costs atomicity, never the session.
+    let _ = execute!(io::stdout(), EnableBracketedPaste);
 
     // Restore runs on the error paths too (Terminal::new included), and a
     // failed restore never shadows the real error.
     let result = Terminal::new(CrosstermBackend::new(stdout))
         .and_then(|mut t| run(&mut t, &cfg_path, bootstrap_identity.as_ref()));
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
     result
 }
 
@@ -304,7 +312,19 @@ fn run(
 
         // Poll input with a short timeout so the repaint cadence is steady.
         if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
+            let ev = event::read()?;
+            // A bracketed paste is one gesture: routed whole to the focused
+            // text field, never replayed as keystrokes over the hotkeys.
+            if let Event::Paste(text) = &ev {
+                handle_paste(
+                    text,
+                    add_provider.as_mut(),
+                    slots_edit.as_mut(),
+                    &mut message,
+                );
+                continue;
+            }
+            if let Event::Key(key) = ev {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
@@ -770,6 +790,42 @@ fn slots_edit_for(snap: &api::Snapshot, selected: usize) -> Option<ui::SlotsEdit
 
 fn clear_cancelled_key(value: &mut String) {
     value.clear();
+}
+
+/// A bracketed paste routed to whichever text field has focus. Fields with a
+/// charset (the account labels) filter it exactly like their keystrokes; with
+/// no text field focused the paste is dropped WITH words, never replayed over
+/// the hotkeys (a pasted "quit tips" must not quit the TUI).
+fn handle_paste(
+    text: &str,
+    add_provider: Option<&mut AddProviderMode>,
+    slots_edit: Option<&mut ui::SlotsEdit>,
+    message: &mut String,
+) {
+    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+    if clean.is_empty() {
+        return;
+    }
+    if let Some(mode) = add_provider {
+        match mode {
+            AddProviderMode::KeyInput { value, .. } => value.push_str(clean.trim()),
+            AddProviderMode::OAuthAccount { value, .. }
+            | AddProviderMode::LogoutAccount { value, .. } => {
+                for c in clean.chars() {
+                    if is_account_label_char(c) && value.chars().count() < ACCOUNT_LABEL_MAX {
+                        value.push(c);
+                    }
+                }
+            }
+            _ => *message = "nothing here takes pasted text".to_string(),
+        }
+        return;
+    }
+    if let Some(edit) = slots_edit {
+        edit.values[edit.field].push_str(clean.trim());
+        return;
+    }
+    *message = "nothing here takes pasted text".to_string();
 }
 
 fn redact_key_from_error(error: &str, key: &str) -> String {

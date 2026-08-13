@@ -8,8 +8,11 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProfileConfig {
-    // `provider` and `baseUrl` are in the JSON but the screen never shows them,
-    // so they are not modelled here: serde ignores the extra fields.
+    // `baseUrl` is in the JSON but the screen never shows it, so it is not
+    // modelled here: serde ignores the extra fields. `provider` IS modelled
+    // since the catalogue gestures (design 2026-08-13) key on it.
+    #[serde(default)]
+    pub provider: String,
     pub mode: String,
     #[serde(default)]
     pub slots: BTreeMap<String, serde_json::Value>,
