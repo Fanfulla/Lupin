@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
-## [Unreleased]
+## [0.3.2] - 2026-08-13
 
 ### Added
 
@@ -29,6 +29,10 @@ evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
   `POST /v1/lupin/agents/wire`; skipping prints the line to paste by hand).
 - **Bracketed paste in the TUI**: where the terminal supports it a paste lands
   atomically in the focused field and never replays over the hotkeys.
+- **Catalogues for the keyed providers too (ADR-53)**: DeepSeek, OpenAI and
+  Gemini lists feed the same assisted inputs, read with the profile's own key
+  sent only to that provider's documented models endpoint. Bare-id lists still
+  buy autocomplete and existence; no key stored just means a plain input.
 
 ## [0.3.1] - 2026-08-12
 
