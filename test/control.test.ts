@@ -648,6 +648,22 @@ describe('POST /v1/lupin/slots', () => {
     expect((await aim({ profile: 'a', sonnet: '' })).status).toBe(400);
     expect(loadConfig().profiles['a']?.slots).toEqual({ opus: 'm', sonnet: 'm', haiku: 'm' });
   });
+
+  it('merges contextWindows into the profile without dropping known ones', async () => {
+    expect((await aim({ profile: 'a', sonnet: 'x', contextWindows: { x: 200000 } })).status).toBe(200);
+    expect((await aim({ profile: 'a', haiku: 'y', contextWindows: { y: 100000 } })).status).toBe(200);
+    expect(loadConfig().profiles['a']?.contextWindows).toEqual({ x: 200000, y: 100000 });
+  });
+
+  it('refuses a bad contextWindows shape and writes nothing on refusal', async () => {
+    expect((await aim({ profile: 'a', sonnet: 'x', contextWindows: { x: -5 } })).status).toBe(400);
+    expect((await aim({ profile: 'a', sonnet: 'x', contextWindows: 'big' })).status).toBe(400);
+    // contextWindows alone is not an aim: the "name at least one slot" rule stays
+    expect((await aim({ profile: 'a', contextWindows: { x: 200000 } })).status).toBe(400);
+    const after = loadConfig().profiles['a'];
+    expect(after?.slots).toEqual({ opus: 'm', sonnet: 'm', haiku: 'm' });
+    expect(after?.contextWindows).toBeUndefined();
+  });
 });
 
 describe('POST /v1/lupin/failover', () => {

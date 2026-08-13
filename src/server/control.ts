@@ -350,7 +350,7 @@ export function registerControlRoutes(app: Hono, bootstrapIdentity: BootstrapIde
   app.post('/v1/lupin/slots', async (c) => {
     const denied = guard(c);
     if (denied !== undefined) return denied;
-    let body: { profile?: unknown; opus?: unknown; sonnet?: unknown; haiku?: unknown };
+    let body: { profile?: unknown; opus?: unknown; sonnet?: unknown; haiku?: unknown; contextWindows?: unknown };
     try {
       body = (await c.req.json()) as typeof body;
     } catch {
@@ -372,11 +372,28 @@ export function registerControlRoutes(app: Hono, bootstrapIdentity: BootstrapIde
     if (aims.every(([, v]) => v === undefined)) {
       return c.json({ ok: false, error: 'name at least one slot to aim' }, 400);
     }
+    // Optional served-truth windows (design 2026-08-13): the catalogue's
+    // context_length rides the same atomic write, so a quick-model gesture is
+    // one call. Merged, never replacing what the profile already knows.
+    const windows = body.contextWindows;
+    if (windows !== undefined) {
+      if (windows === null || typeof windows !== 'object' || Array.isArray(windows)) {
+        return c.json({ ok: false, error: '"contextWindows" must map model names to token counts' }, 400);
+      }
+      for (const [model, w] of Object.entries(windows as Record<string, unknown>)) {
+        if (typeof w !== 'number' || !Number.isFinite(w) || w <= 0) {
+          return c.json({ ok: false, error: `"contextWindows.${model}" must be a positive number of tokens` }, 400);
+        }
+      }
+    }
     try {
       const config = loadConfig();
       const profile = config.profiles[body.profile];
       if (profile === undefined) return c.json({ ok: false, error: `unknown profile "${body.profile}"` }, 404);
       for (const [name, v] of aims) if (typeof v === 'string') profile.slots[name] = v;
+      if (windows !== undefined && Object.keys(windows as Record<string, number>).length > 0) {
+        profile.contextWindows = { ...profile.contextWindows, ...(windows as Record<string, number>) };
+      }
       saveConfig(config);
       return c.json({ ok: true, slots: profile.slots });
     } catch (e) {
