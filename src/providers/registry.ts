@@ -21,6 +21,12 @@ export interface ProviderDef {
   /** Local runtimes only: dialect of the metadata API and where it lives. */
   localApi?: { kind: LocalApiKind; baseUrl: string };
   /**
+   * Hosted providers that publish a public model catalogue (design
+   * 2026-08-13). Feeds the TUI's assisted input through
+   * `/v1/lupin/discover-catalog`; informs, never gates (ADR-42).
+   */
+  catalogApi?: { url: string };
+  /**
    * Static headers that let the provider dashboard attribute traffic to Lupin
    * (SPEC-PROVIDERS §5bis). Sent on every request: attribution is per-call, not
    * a one-time registration. Never auth-bearing: dropping them costs the
@@ -92,6 +98,9 @@ export const PROVIDERS: Record<string, ProviderDef> = {
       'X-OpenRouter-Title': CLIENT_NAME,
       'X-OpenRouter-Categories': 'cli-agent',
     },
+    // Public, no credential (verified live 2026-08-13): feeds the TUI's
+    // assisted model input.
+    catalogApi: { url: 'https://openrouter.ai/api/v1/models' },
     verified: '2026-07-18',
   },
   openai: {
