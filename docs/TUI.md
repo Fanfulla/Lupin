@@ -152,10 +152,11 @@ Each recent request can carry the routing truth inline, exactly like `lupin logs
 | `Enter` | switch the active profile to the row under the cursor |
 | `r` | refresh now, without waiting for the next tick |
 | `d` | run the doctor for the highlighted profile and stream its output in the job panel |
-| `m` | aim the highlighted profile's slots: opus, sonnet and haiku edited in sequence, `Enter` advances and the last `Enter` applies only what changed. Names are written as given and never checked (the `use --opus` rule); an emptied field keeps its model |
+| `m` | aim the highlighted profile's slots: opus, sonnet and haiku edited in sequence, `Enter` advances and the last `Enter` applies only what changed. Names are written as given and never checked (the `use --opus` rule); an emptied field keeps its model. With a provider catalogue (ADR-52) the focused field shows live suggestions and `Tab` completes to the first match |
+| `t` | try a model on the highlighted profile (ADR-52): one id, typed, searched in the catalogue or pasted, then `Enter`; `o`/`s`/`h` exclude single slots, `Enter` applies the id to every included slot in one write. The old values are narrated in the status line, so the way back is another `t` |
 | `:` | open the command palette for `doctor`, `usage`, `list`, `status` and `stop`; `run` remains shell-only |
 | `o` | order mode: type the profile numbers in the order automatic switches should follow (previewed by name in the status line), `Enter` applies, `Esc` cancels |
-| `a` | agents mode: aim the per-subagent routes (SPEC-PROVIDERS §4decies). `↑`/`↓` pick a route, `1`-`9` aim it at that profile, `x` clears it, `Enter` applies, `Esc` cancels |
+| `a` | agents mode: aim the per-subagent routes (SPEC-PROVIDERS §4decies). `↑`/`↓` pick a route, `1`-`9` aim it at that profile, `m` aims it at a model (catalogue-assisted), `n` names a new route, `x` clears it, `Enter` applies, `Esc` cancels |
 
 Onboarding is modal. `q` exits loading, provider selection, risk confirmation,
 OAuth waiting, errors and success. In the masked API-key field `q` is ordinary
@@ -170,8 +171,21 @@ Agents mode (ADR-47) edits the `agents` table through one atomic control call
 conventional `subagents` row always shown (even when unset) so the first-use
 gesture exists on screen. `1`-`9` on a row writes the delegation to that
 profile, `x` clears the row, `Enter` applies the whole table at once, `Esc`
-throws the edit away. Model-string targets and new route names are CLI gestures
-(`lupin agents set`), and the status line says so when a key cannot do it.
+throws the edit away. Since 2026-08-13 (ADR-52) the surface has full parity
+with the CLI: `n` prompts for a new route name (the agent charset, validated
+at the keystroke), `m` opens the catalogue-assisted model input for the
+highlighted route, and after an apply that aimed a NAMED route the TUI offers
+the ADR-48 wire (`y` writes `model: claude-lupin-agent:<name>` into the
+agent's file through `POST /v1/lupin/agents/wire`, anything else skips; the
+route is saved either way, and a skip prints the line to paste by hand).
+
+Pasting works everywhere a model id is typed. Where the terminal supports
+bracketed paste (every Unix terminal; the Windows console delivers pastes as
+key bursts instead, which lands in the same field) the paste arrives as one
+atomic gesture and never replays over the hotkeys. The catalogue behind the
+assisted inputs comes from `POST /v1/lupin/discover-catalog` (SPEC-PROVIDERS
+§3quinquies), is cached daemon-side for ten minutes, and only ever informs:
+an id outside it is written as given, with an advisory in the status line.
 
 Order mode (ADR-34) edits the failover chain through one atomic control call
 (`POST /v1/lupin/switch-order`): each named profile fails over to the next, the

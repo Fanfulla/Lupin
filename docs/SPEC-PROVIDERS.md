@@ -174,6 +174,16 @@ Rules specific to local runtimes:
 10. **Thinking is native Anthropic.** Thinking arrives as `thinking` content blocks with `thinking_delta`/`signature_delta` stream events; the `signature` is cosmetic (the message id, not a cryptographic signature) and nothing validates signatures on replay, so a `lupin resume` handoff INTO ds4 does not need `stripHistoryThinking`. Disable with `thinking: {"type":"disabled"}` or a non-thinking alias. No `ping` events are ever emitted, and every response closes its connection (`Connection: close`).
 11. **Sampling defaults are DeepSeek's**: `temperature=1, top_p=1, min_p=0.05`; an explicit client value always wins. Tool-call structural tokens are force-decoded greedily server-side, and a malformed tool call is retried by injecting a model-visible tool error, never surfaced as an API error.
 
+### 3quinquies. Hosted model catalogues (`catalogApi`, 2026-08-13, ADR-52)
+
+Local runtimes have live discovery (§3ter); hosted providers that publish a public model list get the read-only twin. The registry carries the capability, one implementation serves every provider (rule 4):
+
+- **`ProviderDef.catalogApi?: { url }`**. First entry: OpenRouter, `GET https://openrouter.ai/api/v1/models` (public, verified live 2026-08-13). No credential is ever sent: the endpoint takes none, and a catalogue read must never spend or leak anything.
+- **`src/providers/catalog.ts`** fetches and normalizes to `{ id, name?, contextWindow?, supportsTools?, promptPrice?, completionPrice? }` (OpenRouter mapping: `context_length`, `supported_parameters` containing `"tools"`, `pricing.prompt/completion` as USD-per-token strings). In-memory cache per provider, TTL 10 minutes, failures never cached.
+- **`POST /v1/lupin/discover-catalog { providerId }`** (providerId = the profile's `provider`, a registry key): 404 for a provider without a catalogue, 502 with the fetch error, 200 with the normalized rows. It feeds the TUI's assisted model input (docs/TUI.md): type-to-search, paste-an-id, per-row window, tools flag and price.
+- **The catalogue informs, it never gates.** ADR-42 stands: no write anywhere is blocked on a catalogue check, because listing is not a promise the PLAN accepts the model (§3quater.1 proved the gap live) and a brand-new model may not be listed yet. An off-catalogue id is written as given, with an advisory in the talking line.
+- **A known window rides the write**: `POST /v1/lupin/slots` accepts an optional `contextWindows` map, merged into the profile's `contextWindows` (§4quinquies) in the same atomic write, so a quick-model gesture arms the dynamic threshold and the doctor preflight without a second call.
+
 ## 4. Slot mapping: how Claude Code picks the models
 
 Claude Code sends `claude-*` names in the body, resolved from its internal aliases (opus/sonnet/haiku). The proxy intercepts and resolves them:
@@ -285,7 +295,8 @@ So the design is id algebra in the namespace Lupin already owns (§4.2), zero co
 - **Not published in `/v1/models`**: agent ids are typed into agent definitions, not picked from a picker; an inert row with no gesture behind it would be noise. (The switch rows exist because the picker IS their surface.)
 - **Opt-in end to end**: an absent table changes zero behaviour (ADR-7, ADR-25); the env var is filled only when the user declared the `subagents` route.
 - **Failover interplay, said honestly**: a string target re-resolves against the failover profile like any slot string; a `{"profile"}` target is absolute, so the §4ter hop retries the same place once and the log shows it. Same limit slot delegation already has.
-- Surfaces: `lupin agents` (SPEC-CLI §1; `--wire` writes the frontmatter line for you, ADR-48), `POST /v1/lupin/agents` (whole table, atomic, the ADR-34 argument), and the TUI agents mode (docs/TUI.md).
+- Surfaces: `lupin agents` (SPEC-CLI §1; `--wire` writes the frontmatter line for you, ADR-48), `POST /v1/lupin/agents` (whole table, atomic, the ADR-34 argument), and the TUI agents mode (docs/TUI.md), which since 2026-08-13 (ADR-52) has full parity: new route names (`n`), model targets through the assisted input (`m`), profile delegation (`1-9`), unset (`x`).
+- **The wire over the control API** (`POST /v1/lupin/agents/wire { name, unset?, cwd? }`, ADR-52 amending ADR-48): the same one-field frontmatter write the CLI flag does, so the TUI can offer it after saving a named route (explicit `y`, default skip). The caller sends its own `cwd` because the daemon's working directory is the state dir (ADR-49) and the project-level `.claude/agents` lookup would miss without it. The answer names the file, the previous value and the new one; a failure never unsaves the route and always carries the line to paste by hand.
 
 ### 4septies. `init` offers routes and failover, the user decides (2026-07-20)
 

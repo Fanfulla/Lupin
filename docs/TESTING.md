@@ -42,7 +42,9 @@ The fake provider is essential: it lets CI exercise the cases real providers wil
 
 ## 3bis. The Rust TUI, and the one mile that stays manual
 
-The optional sidecar (`tui/`) is tested with `cargo test --manifest-path tui/Cargo.toml`, run by the `tui` job in CI. Three things are covered without a terminal: the config path precedence (LUPIN_CONFIG over LUPIN_DIR, matching the Node side, which was WRONG here until 2026-07-29), the log tail (the same rules `test/top.test.ts` pins on the Node side), and the screen itself, drawn into ratatui's `TestBackend` buffer and read back as text.
+Recorded provider output that is NOT a translation fixture (for example the OpenRouter catalogue response) lives in `test/recordings/`, never under `test/fixtures/`: that directory belongs to the fixture runner, which rejects any JSON without a `name` and a `direction`.
+
+The optional sidecar (`tui/`) is tested with `cargo test --manifest-path tui/Cargo.toml`, run by the `tui` job in CI, which also gates on `cargo clippy --manifest-path tui/Cargo.toml -- -D warnings`: run BOTH locally before pushing tui/ changes (a dead-code warning alone fails CI). Three things are covered without a terminal: the config path precedence (LUPIN_CONFIG over LUPIN_DIR, matching the Node side, which was WRONG here until 2026-07-29), the log tail (the same rules `test/top.test.ts` pins on the Node side), and the screen itself, drawn into ratatui's `TestBackend` buffer and read back as text.
 
 What cannot be automated is a real keyboard in a real terminal. That is a short manual pass, and the only honest way to close it:
 

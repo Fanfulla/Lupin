@@ -7,6 +7,29 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
+## [Unreleased]
+
+### Added
+
+- **Try a model in one gesture (`t` in the TUI, ADR-52)**: type, search or
+  paste a model id, then apply it to the whole highlighted profile (single
+  slots excludable with `o`/`s`/`h`). The status line narrates every old value,
+  so the way back is another `t`.
+- **The OpenRouter catalogue assists every model input.** Providers that
+  publish a public model list carry `catalogApi` in the registry (OpenRouter
+  first); the TUI searches it live while you type, shows context window, tool
+  support and price per row, and completes with `Tab` in the slot editor. The
+  catalogue only informs: an id outside it is written as given, with an
+  advisory, never a refusal. When a picked model's window is known it lands in
+  the profile's `contextWindows` in the same write.
+- **Agents mode reaches CLI parity**: `n` creates a route with a new name and
+  `m` aims a route at a model id (catalogue-assisted), alongside the existing
+  profile delegation and clear gestures. After applying a named route the TUI
+  offers the ADR-48 wire (`y` writes the frontmatter line through the new
+  `POST /v1/lupin/agents/wire`; skipping prints the line to paste by hand).
+- **Bracketed paste in the TUI**: where the terminal supports it a paste lands
+  atomically in the focused field and never replays over the hotkeys.
+
 ## [0.3.1] - 2026-08-12
 
 ### Fixed
