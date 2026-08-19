@@ -18,3 +18,6 @@ marketing/
 
 # Isolated implementation worktrees
 .worktrees/
+
+# graphify knowledge-graph output (local exploration tool, not a build artifact)
+graphify-out/
