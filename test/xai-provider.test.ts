@@ -146,6 +146,111 @@ describe('xAI OAuth profile', () => {
     expect(body.content).toEqual([{ type: 'text', text: 'ok' }]);
   });
 
+  it('redacts an opaque OAuth token echoed by an inference error', async () => {
+    const accessToken = 'opaque.access/provider-value';
+    setOAuthTokens('xai', {
+      accessToken,
+      refreshToken: 'opaque.refresh/provider-value',
+      expiresAt: Date.now() + 3_600_000,
+      lifetimeMs: 3_600_000,
+      tokenType: 'Bearer',
+    });
+    const fetchImpl: typeof fetch = () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: { message: `credential ${accessToken} rejected` } }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    const app = createApp(
+      config({
+        provider: 'xai',
+        mode: 'responses',
+        auth: { type: 'oauth', provider: 'xai' },
+        slots: { opus: 'grok-4.6', sonnet: 'grok-4.6', haiku: 'grok-4.6' },
+      }),
+      { fetchImpl },
+    );
+
+    const res = await app.request(
+      ask({ model: 'claude-opus-5', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }),
+    );
+    const text = await res.text();
+
+    expect(res.status).toBe(400);
+    expect(text).toContain('[redacted]');
+    expect(text).not.toContain(accessToken);
+  });
+
+  it('redacts an opaque OAuth token echoed by an inference network error', async () => {
+    const accessToken = 'opaque.access/network-value';
+    setOAuthTokens('xai', {
+      accessToken,
+      refreshToken: 'opaque.refresh/network-value',
+      expiresAt: Date.now() + 3_600_000,
+      lifetimeMs: 3_600_000,
+      tokenType: 'Bearer',
+    });
+    const fetchImpl: typeof fetch = () => Promise.reject(new Error(`socket closed for ${accessToken}`));
+    const app = createApp(
+      config({
+        provider: 'xai',
+        mode: 'responses',
+        auth: { type: 'oauth', provider: 'xai' },
+        slots: { opus: 'grok-4.6', sonnet: 'grok-4.6', haiku: 'grok-4.6' },
+      }),
+      { fetchImpl },
+    );
+
+    const res = await app.request(
+      ask({ model: 'claude-opus-5', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }),
+    );
+    const text = await res.text();
+
+    expect(res.status).toBe(529);
+    expect(text).toContain('[redacted]');
+    expect(text).not.toContain(accessToken);
+  });
+
+  it('redacts an opaque OAuth token echoed by a streaming reader failure', async () => {
+    const accessToken = 'opaque.access/stream-value';
+    setOAuthTokens('xai', {
+      accessToken,
+      refreshToken: 'opaque.refresh/stream-value',
+      expiresAt: Date.now() + 3_600_000,
+      lifetimeMs: 3_600_000,
+      tokenType: 'Bearer',
+    });
+    const fetchImpl: typeof fetch = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error(`stream closed for ${accessToken}`));
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        ),
+      );
+    const app = createApp(
+      config({
+        provider: 'xai',
+        mode: 'responses',
+        auth: { type: 'oauth', provider: 'xai' },
+        slots: { opus: 'grok-4.6', sonnet: 'grok-4.6', haiku: 'grok-4.6' },
+      }),
+      { fetchImpl },
+    );
+
+    const res = await app.request(
+      ask({ model: 'claude-opus-5', max_tokens: 20, stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+    );
+    const text = await res.text();
+
+    expect(text).toContain('[redacted]');
+    expect(text).not.toContain(accessToken);
+  });
+
   it('rejects an OAuth profile override outside the pinned xAI HTTPS origin before fetch', async () => {
     setOAuthTokens('xai', {
       accessToken: 'xai-oauth-fake',

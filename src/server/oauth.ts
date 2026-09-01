@@ -15,6 +15,7 @@ import { keychainLabel } from '../config/keychain.js';
 import type { DeviceOAuthProviderDef, OAuthProviderDef } from '../providers/oauth.js';
 import { splitAccountKey, tokenUrl } from '../providers/oauth.js';
 import { CLIENT_NAME, CLIENT_VERSION } from '../providers/identity.js';
+import { scrubSecrets } from '../core/errors.js';
 import { arch, hostname, platform, release } from 'node:os';
 
 // Device identity headers (DESIGN-OAUTH §4.1/§6): the provider console lists
@@ -75,6 +76,13 @@ interface TokenResponse {
   error_description?: string;
 }
 
+const SECRET_FORM_FIELDS = ['code', 'code_verifier', 'device_code', 'refresh_token', 'client_secret'] as const;
+
+/** Values that must be removed if an OAuth endpoint echoes its request. */
+export function oauthFormSecretValues(form: Readonly<Record<string, string>>): string[] {
+  return SECRET_FORM_FIELDS.map((field) => form[field]).filter((value): value is string => value !== undefined && value !== '');
+}
+
 /**
  * form-urlencoded POST with tolerant error mapping (shared by the device and
  * PKCE flows). The Kimi `X-Msh-*` device headers go ONLY on the Kimi device
@@ -87,6 +95,7 @@ export async function postOAuthForm(
   fetchImpl: typeof fetch,
   opts: { kimiDeviceHeaders?: boolean } = {},
 ): Promise<TokenResponse & Record<string, unknown>> {
+  const exactSecrets = oauthFormSecretValues(form);
   let res: Response;
   try {
     res = await fetchImpl(url, {
@@ -106,19 +115,27 @@ export async function postOAuthForm(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const cause = e instanceof Error && e.cause instanceof Error ? ` (${e.cause.message})` : '';
-    throw new OAuthError('network', `${msg}${cause}: POST ${url}`);
+    throw new OAuthError('network', scrubSecrets(`${msg}${cause}: POST ${url}`, exactSecrets));
   }
   const text = await res.text();
   try {
     return JSON.parse(text) as TokenResponse & Record<string, unknown>;
   } catch {
-    throw new OAuthError('bad_response', `non-JSON response (HTTP ${String(res.status)}): ${text.slice(0, 200)}`);
+    const detail = scrubSecrets(text, exactSecrets).slice(0, 200);
+    throw new OAuthError('bad_response', `non-JSON response (HTTP ${String(res.status)}): ${detail}`);
   }
 }
 
-export function tokensFromResponse(r: TokenResponse, now: number = Date.now()): OAuthTokens {
+export function tokensFromResponse(
+  r: TokenResponse,
+  now: number = Date.now(),
+  exactSecrets: readonly string[] = [],
+): OAuthTokens {
   if (r.access_token === undefined) {
-    throw new OAuthError(r.error ?? 'invalid_response', r.error_description ?? 'token response without access_token');
+    throw new OAuthError(
+      r.error ?? 'invalid_response',
+      scrubSecrets(r.error_description ?? 'token response without access_token', exactSecrets),
+    );
   }
   const lifetimeMs = (r.expires_in ?? 3600) * 1000;
   return {
@@ -221,7 +238,10 @@ export async function pollDeviceToken(
       case 'access_denied':
         throw new OAuthError('access_denied', 'login denied by the user');
       default:
-        throw new OAuthError(r.error ?? 'unknown', r.error_description ?? 'unexpected token endpoint error');
+        throw new OAuthError(
+          r.error ?? 'unknown',
+          scrubSecrets(r.error_description ?? 'unexpected token endpoint error', [auth.deviceCode]),
+        );
     }
   }
 }
@@ -245,13 +265,22 @@ export async function refreshOAuthTokens(
   // The X-Msh-* device headers belong to the descriptor that asks for them
   // (ADR-28): the refresh is shared with the PKCE providers, which reject them
   // with 400, and with the other device providers, which never wanted them.
-  const r = await postOAuthForm(tokenUrl(def), form, fetchImpl, {
-    kimiDeviceHeaders: def.flow.kind === 'device' && def.flow.deviceIdentityHeaders === true,
-  });
+  let r;
+  try {
+    r = await postOAuthForm(tokenUrl(def), form, fetchImpl, {
+      kimiDeviceHeaders: def.flow.kind === 'device' && def.flow.deviceIdentityHeaders === true,
+    });
+  } catch (e) {
+    const message = scrubSecrets(e instanceof Error ? e.message : String(e), [tokens.accessToken, tokens.refreshToken]);
+    throw new OAuthError(e instanceof OAuthError ? e.code : 'network', message);
+  }
   if (r.access_token === undefined) {
     const denied = entitlementError(def, r.error);
     if (denied !== undefined) throw denied;
-    throw new OAuthError(r.error ?? 'invalid_grant', r.error_description ?? 'refresh rejected');
+    throw new OAuthError(
+      r.error ?? 'invalid_grant',
+      scrubSecrets(r.error_description ?? 'refresh rejected', [tokens.accessToken, tokens.refreshToken]),
+    );
   }
   const next = tokensFromResponse(r);
   // the server MAY rotate the refresh token: always keep the newest, else keep the old one

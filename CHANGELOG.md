@@ -39,6 +39,10 @@ evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
   audit reports no known vulnerability.
 - Provider connectivity errors redact both known token formats and the exact
   submitted replacement before crossing the control API.
+- Authenticated model catalogues reject profiles from another provider before
+  resolving a key or starting a network request.
+- OAuth and inference errors redact exact opaque access tokens, refresh tokens,
+  and authorization codes before reaching logs, the TUI, or API clients.
 - Repository-local environment, credential, debug, process, and runtime state
   files are ignored explicitly so `git add -A` cannot publish them.
 

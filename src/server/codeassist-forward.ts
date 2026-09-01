@@ -19,7 +19,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { ProfileConfig } from '../config/config.js';
-import type { ResolvedCredential } from './credential.js';
+import { scrubCredentialError, type ResolvedCredential } from './credential.js';
 import { buildToolNameMap, type AnthropicRequest } from '../core/request.js';
 import { mapAnthropicToCodeAssist } from '../core/codeassist/request.js';
 import { CodeAssistStreamTranslator } from '../core/codeassist/stream.js';
@@ -100,12 +100,19 @@ async function resolveAccount(args: CodeAssistForwardArgs): Promise<Account | { 
       signal: AbortSignal.timeout(args.timeoutMs),
     });
   } catch (e) {
-    return { err: networkError(e instanceof Error ? e.message : String(e)) };
+    return { err: networkError(scrubCredentialError(e instanceof Error ? e.message : String(e), args.credential)) };
   }
 
   if (!res.ok) {
     const raw = await res.text();
-    return { err: normalizeProviderError(res.status, raw, undefined, new Set(args.profile.quirks ?? [])) };
+    return {
+      err: normalizeProviderError(
+        res.status,
+        scrubCredentialError(raw, args.credential),
+        undefined,
+        new Set(args.profile.quirks ?? []),
+      ),
+    };
   }
 
   const loaded = (await res.json()) as {
@@ -180,21 +187,26 @@ export async function codeassistForward(args: CodeAssistForwardArgs): Promise<Co
       signal: AbortSignal.timeout(args.timeoutMs),
     });
   } catch (e) {
-    return { err: networkError(e instanceof Error ? e.message : String(e)) };
+    return { err: networkError(scrubCredentialError(e instanceof Error ? e.message : String(e), args.credential)) };
   }
 
   if (!providerRes.ok) {
     const raw = await providerRes.text();
     const retryAfter = providerRes.headers.get('retry-after');
     return {
-      err: normalizeProviderError(providerRes.status, raw, retryAfter ?? undefined, new Set(args.profile.quirks ?? [])),
+      err: normalizeProviderError(
+        providerRes.status,
+        scrubCredentialError(raw, args.credential),
+        retryAfter ?? undefined,
+        new Set(args.profile.quirks ?? []),
+      ),
     };
   }
 
   const opts = { requestedModel: args.requestedModel, toolNames };
 
   if (anthropicReq.stream === true) {
-    return { status: 200, response: streamResponse(providerRes, opts, args.pingIntervalMs ?? 15_000) };
+    return { status: 200, response: streamResponse(providerRes, opts, args.credential, args.pingIntervalMs ?? 15_000) };
   }
 
   const translator = new CodeAssistStreamTranslator(opts);
@@ -203,7 +215,11 @@ export async function codeassistForward(args: CodeAssistForwardArgs): Promise<Co
     const text = await providerRes.text();
     events.push(...translator.push(text), ...translator.finish());
   } catch (e) {
-    return { err: networkError(`Code Assist stream failed: ${e instanceof Error ? e.message : String(e)}`) };
+    return {
+      err: networkError(
+        scrubCredentialError(`Code Assist stream failed: ${e instanceof Error ? e.message : String(e)}`, args.credential),
+      ),
+    };
   }
   return {
     status: 200,
@@ -218,6 +234,7 @@ export async function codeassistForward(args: CodeAssistForwardArgs): Promise<Co
 function streamResponse(
   providerRes: Response,
   opts: { requestedModel: string; toolNames: ReadonlyMap<string, string> },
+  credential: ResolvedCredential,
   pingIntervalMs: number,
 ): Response {
   const translator = new CodeAssistStreamTranslator(opts);
@@ -247,7 +264,11 @@ function streamResponse(
         }
         emit(translator.finish());
       } catch (e) {
-        emit(translator.abort(`Code Assist stream failed: ${e instanceof Error ? e.message : String(e)}`));
+        emit(
+          translator.abort(
+            scrubCredentialError(`Code Assist stream failed: ${e instanceof Error ? e.message : String(e)}`, credential),
+          ),
+        );
       }
       alive = false;
       clearInterval(ping);

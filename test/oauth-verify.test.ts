@@ -3,7 +3,7 @@
 // entry point is POST :loadCodeAssist, so the descriptor carries the body.
 
 import { createServer, type Server } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { verifyToken } from '../src/cli/login.js';
 import { OAUTH_PROVIDERS, type OAuthProviderDef } from '../src/providers/oauth.js';
 
@@ -59,6 +59,7 @@ function def(over: Partial<OAuthProviderDef>): OAuthProviderDef {
 const tokens = { accessToken: 'tok-123', expiresAt: Date.now() + 60_000, tokenType: 'Bearer' };
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   server?.close();
   server = undefined;
   seen.length = 0;
@@ -99,6 +100,25 @@ describe('verifyToken', () => {
     expect(verdict.ok).toBe(false);
     expect(verdict.detail).not.toContain('tok-123');
     expect(verdict.detail).toContain('[redacted]');
+  });
+
+  it('a verification network error cannot echo opaque stored tokens', async () => {
+    const opaque = {
+      accessToken: 'opaque.access/network-value',
+      refreshToken: 'opaque.refresh/network-value',
+      expiresAt: Date.now() + 60_000,
+      tokenType: 'Bearer',
+    };
+    vi.stubGlobal(
+      'fetch',
+      () => Promise.reject(new Error(`socket closed for ${opaque.accessToken} and ${opaque.refreshToken}`)),
+    );
+
+    const verdict = await verifyToken(def({}), opaque);
+
+    expect(verdict.detail).toContain('[redacted]');
+    expect(verdict.detail).not.toContain(opaque.accessToken);
+    expect(verdict.detail).not.toContain(opaque.refreshToken);
   });
 
   it('a descriptor-defined 403 explains entitlement and the safe fallback', async () => {

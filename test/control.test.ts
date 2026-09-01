@@ -567,16 +567,33 @@ describe('POST /v1/lupin/discover-catalog', () => {
     expect((await post(app, {})).status).toBe(400);
   });
 
-  it('an auth catalogue resolves the named profile key and sends it (ADR-53)', async () => {
+  it('rejects a profile from another provider before resolving or sending its key', async () => {
+    process.env['X'] = 'opaque-key-for-another-provider';
+    let calls = 0;
+    const fetchCatalog: typeof fetch = () => {
+      calls++;
+      return Promise.resolve(new Response('{}'));
+    };
+
+    const res = await post(appWithControl({ fetchCatalog }), { providerId: 'deepseek', profile: 'a' });
+
+    expect(res.status).toBe(400);
+    expect(calls).toBe(0);
+    expect(((await res.json()) as { error: string }).error).toContain('belongs to provider "moonshot"');
+  });
+
+  it('an auth catalogue resolves a matching profile key and sends it (ADR-53)', async () => {
     process.env['X'] = 'sk-test';
     try {
+      const config = baseConfig();
+      config.profiles['a']!.provider = 'deepseek';
+      saveConfig(config);
       const calls: { headers?: unknown }[] = [];
       const ok = ((_url: string | URL | Request, init?: RequestInit) => {
         calls.push({ headers: init?.headers });
         return Promise.resolve(new Response(JSON.stringify({ data: [{ id: 'deepseek-chat' }] }), { status: 200 }));
       }) as typeof fetch;
-      // baseConfig profile "a" carries apiKeyRef X; deepseek's catalogue is auth-flagged.
-      const res = await post(appWithControl({ fetchCatalog: ok }), { providerId: 'deepseek', profile: 'a' });
+      const res = await post(appWithControl({ fetchCatalog: ok }, config), { providerId: 'deepseek', profile: 'a' });
       expect(res.status).toBe(200);
       const body = (await res.json()) as { models: { id: string }[] };
       expect(body.models).toEqual([{ id: 'deepseek-chat' }]);
@@ -587,7 +604,10 @@ describe('POST /v1/lupin/discover-catalog', () => {
   });
 
   it('an auth catalogue without a profile or without a stored key degrades honestly', async () => {
-    const app = appWithControl();
+    const config = baseConfig();
+    config.profiles['a']!.provider = 'deepseek';
+    saveConfig(config);
+    const app = appWithControl({}, config);
     expect((await post(app, { providerId: 'deepseek' })).status).toBe(400);
     expect((await post(app, { providerId: 'deepseek', profile: 'ghost' })).status).toBe(404);
     // profile exists but no key is resolvable: a 502 the TUI degrades on

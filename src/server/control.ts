@@ -209,6 +209,12 @@ export function registerControlRoutes(app: Hono, bootstrapIdentity: BootstrapIde
         return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
       }
       if (profile === undefined) return c.json({ ok: false, error: `unknown profile "${body.profile}"` }, 404);
+      if (profile.provider !== def.id) {
+        return c.json(
+          { ok: false, error: `profile "${body.profile}" belongs to provider "${profile.provider}", not "${def.id}"` },
+          400,
+        );
+      }
       const auth = profile.auth;
       const key = auth.type === 'bearer' || auth.type === 'x-api-key' ? resolveApiKey(auth) : undefined;
       if (key === undefined) {
