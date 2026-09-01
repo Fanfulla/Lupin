@@ -21,3 +21,17 @@ marketing/
 
 # graphify knowledge-graph output (local exploration tool, not a build artifact)
 graphify-out/
+
+# Local secrets and state: never publish a repository-local LUPIN_DIR.
+/.env
+/.env.*
+!/.env.example
+/.lupin/
+/config.json
+/credentials.json
+/device_id
+/lupin.pid
+/watchdog.pid
+/lifecycle.lock
+/run-announcement-*.json
+/debug/

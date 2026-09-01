@@ -13,10 +13,28 @@ export interface ResolvedCredential {
   value: string;
   /**
    * Base URL this credential is bound to, when the provider names it at
-   * exchange time (§3quater). It wins over the registry default, and never
-   * over an explicit `baseUrl` on the profile: the user's override stays king.
+   * exchange time (§3quater). It wins over the registry default. An explicit
+   * profile override has precedence only when `allowedHosts` permits its
+   * destination.
    */
   baseUrl?: string;
+  /** HTTPS destination allowlist carried by high-value OAuth descriptors. */
+  allowedHosts?: string[];
+}
+
+export function credentialDestinationAllowed(url: string, allowedHosts?: readonly string[]): boolean {
+  if (allowedHosts === undefined || allowedHosts.length === 0) return true;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    return allowedHosts.some((allowed) => {
+      const normalized = allowed.toLowerCase();
+      return host === normalized || host.endsWith(`.${normalized}`);
+    });
+  } catch {
+    return false;
+  }
 }
 
 export class CredentialError extends Error {
@@ -97,7 +115,11 @@ export async function resolveCredential(
       });
       return { header: 'authorization', value: `Bearer ${bought.token}`, baseUrl: bought.apiBaseUrl };
     }
-    return { header: 'authorization', value: `Bearer ${accessToken}` };
+    return {
+      header: 'authorization',
+      value: `Bearer ${accessToken}`,
+      ...(def.allowedInferenceHosts !== undefined ? { allowedHosts: [...def.allowedInferenceHosts] } : {}),
+    };
   }
 
   const apiKey = resolveApiKey(auth);

@@ -20,20 +20,24 @@ const MAX_MESSAGE_LEN = 2000;
 const CREDENTIAL_PATTERNS: [RegExp, string][] = [
   [/Bearer\s+[A-Za-z0-9._~+/-]{8,}=*/g, 'Bearer [redacted]'],
   [/eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+){0,2}/g, '[redacted]'], // JWT
+  [/xai-[A-Za-z0-9_-]{16,}/g, '[redacted]'],
   [/sk-[A-Za-z0-9_-]{16,}/g, '[redacted]'],
   [/AIza[0-9A-Za-z_-]{30,}/g, '[redacted]'], // Google API key
   [/([?&]key=)[^&\s]+/g, '$1[redacted]'],
   [/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[redacted]'], // email
 ];
 
-function scrubCredentials(message: string): string {
+export function scrubSecrets(message: string, exactSecrets: readonly string[] = []): string {
   let out = message;
+  for (const secret of exactSecrets) {
+    if (secret !== '') out = out.replaceAll(secret, '[redacted]');
+  }
   for (const [pattern, replacement] of CREDENTIAL_PATTERNS) out = out.replace(pattern, replacement);
   return out;
 }
 
 function errorBody(type: string, message: string): AnthropicErrorBody {
-  return { type: 'error', error: { type, message: scrubCredentials(message) } };
+  return { type: 'error', error: { type, message: scrubSecrets(message) } };
 }
 
 function extractMessage(rawBody: string): string {
