@@ -154,6 +154,7 @@ Each recent request can carry the routing truth inline, exactly like `lupin logs
 | `d` | run the doctor for the highlighted profile and stream its output in the job panel |
 | `m` | aim the highlighted profile's slots: opus, sonnet and haiku edited in sequence, `Enter` advances and the last `Enter` applies only what changed. Names are written as given and never checked (the `use --opus` rule); an emptied field keeps its model. With a provider catalogue (ADR-52) the focused field shows live suggestions and `Tab` completes to the first match |
 | `t` | try a model on the highlighted profile (ADR-52): one id, typed, searched in the catalogue or pasted, then `Enter`; `o`/`s`/`h` exclude single slots, `Enter` applies the id to every included slot in one write. The old values are narrated in the status line, so the way back is another `t` |
+| `c` | replace the highlighted API-key profile's credential: masked input, real verification, and no profile rewrite. The old key remains active unless verification succeeds or `y` explicitly saves anyway |
 | `:` | open the command palette for `doctor`, `usage`, `list`, `status` and `stop`; `run` remains shell-only |
 | `o` | order mode: type the profile numbers in the order automatic switches should follow (previewed by name in the status line), `Enter` applies, `Esc` cancels |
 | `a` | agents mode: aim the per-subagent routes (SPEC-PROVIDERS §4decies). `↑`/`↓` pick a route, `1`-`9` aim it at that profile, `m` aims it at a model (catalogue-assisted), `n` names a new route, `x` clears it, `Enter` applies, `Esc` cancels |
@@ -161,6 +162,22 @@ Each recent request can carry the routing truth inline, exactly like `lupin logs
 Onboarding is modal. `q` exits loading, provider selection, risk confirmation,
 OAuth waiting, errors and success. In the masked API-key field `q` is ordinary
 text, so `Ctrl-C` is the global exit and the footer says so explicitly.
+
+### Replacing an API key
+
+Highlight a key-backed profile and press `c`. The modal never reads or displays
+the existing secret; it accepts only the replacement. Enter runs a real
+one-token check against the profile as it is configured now. Until that check
+succeeds, the old credential remains in the keychain or mode-600 fallback
+file. A failed check offers `y` to save anyway, while Enter, `n`, or Esc keeps
+the old key.
+
+Rotation updates only the credential reference shared by the profile. Slots,
+routes, failover, quirks and doctor history are not rewritten. If several
+profiles share that reference, the talking line names them. A profile whose
+key comes from an environment variable is refused because the environment
+would continue to win; update the variable and restart instead. OAuth and
+keyless rows direct the user back to provider management with `p`.
 
 The `1`-`9` hotkeys act immediately; the cursor path is two-step on purpose, so
 scrolling the list never fires a switch by accident. The cursor stays on a real
