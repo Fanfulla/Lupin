@@ -113,6 +113,28 @@ describe('runPkceLogin', () => {
     ).rejects.toMatchObject({ code: 'invalid_grant' });
   });
 
+  it('redacts an opaque authorization code echoed by the token endpoint', async () => {
+    fake = await startFakePkce();
+    const code = 'opaque.authorization/code';
+    fake.exchangeError = {
+      error: 'invalid_grant',
+      error_description: `client ${fake.def.clientId} rejected authorization_code ${code}`,
+    };
+
+    const message = await runPkceLogin(fake.def, {
+      openBrowser: browserDrivingRedirect({ code }),
+      port: 0,
+    }).then(
+      () => 'unexpected success',
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+
+    expect(message).toContain('[redacted]');
+    expect(message).not.toContain(code);
+    expect(message).toContain(fake.def.clientId);
+    expect(message).toContain('authorization_code');
+  });
+
   it('refuses a descriptor with no captured client_id (Gemini placeholder)', async () => {
     fake = await startFakePkce();
     const def = { ...fake.def, clientId: '' };

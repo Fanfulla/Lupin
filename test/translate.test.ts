@@ -207,6 +207,37 @@ describe('translate /v1/messages (non-streaming)', () => {
 });
 
 describe('translate /v1/messages (streaming)', () => {
+  it('redacts an opaque credential echoed by a streaming reader failure', async () => {
+    const accessToken = 'opaque.access/translate-stream';
+    process.env[KEY_ENV] = accessToken;
+    const fetchImpl: typeof fetch = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error(`stream closed for ${accessToken}`));
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        ),
+      );
+    try {
+      const app = createApp(translateConfig('https://example.invalid/v1'), { fetchImpl, logger: noopLogger });
+      const res = await post(app, '/v1/messages', {
+        model: 'claude-sonnet-9',
+        max_tokens: 10,
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      });
+      const text = await res.text();
+
+      expect(text).toContain('[redacted]');
+      expect(text).not.toContain(accessToken);
+    } finally {
+      process.env[KEY_ENV] = KEY_VALUE;
+    }
+  });
+
   it('translates OpenAI SSE to Anthropic events, [DONE] never leaks out', async () => {
     fake.respondWith({
       kind: 'sse',

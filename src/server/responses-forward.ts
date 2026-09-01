@@ -10,7 +10,7 @@
 // implementation, no second parser to drift (the ADR-22 lesson).
 
 import type { ProfileConfig } from '../config/config.js';
-import type { ResolvedCredential } from './credential.js';
+import { scrubCredentialError, type ResolvedCredential } from './credential.js';
 import { buildToolNameMap, type AnthropicRequest } from '../core/request.js';
 import { mapAnthropicToResponses } from '../core/responses/request.js';
 import { ResponsesStreamTranslator } from '../core/responses/stream.js';
@@ -52,14 +52,19 @@ export async function responsesForward(args: ResponsesForwardArgs): Promise<Resp
       signal: AbortSignal.timeout(args.timeoutMs),
     });
   } catch (e) {
-    return { err: networkError(e instanceof Error ? e.message : String(e)) };
+    return { err: networkError(scrubCredentialError(e instanceof Error ? e.message : String(e), args.credential)) };
   }
 
   if (!providerRes.ok) {
     const raw = await providerRes.text();
     const retryAfter = providerRes.headers.get('retry-after');
     return {
-      err: normalizeProviderError(providerRes.status, raw, retryAfter ?? undefined, new Set(args.profile.quirks ?? [])),
+      err: normalizeProviderError(
+        providerRes.status,
+        scrubCredentialError(raw, args.credential),
+        retryAfter ?? undefined,
+        new Set(args.profile.quirks ?? []),
+      ),
     };
   }
 
@@ -75,7 +80,7 @@ export async function responsesForward(args: ResponsesForwardArgs): Promise<Resp
   };
 
   if (anthropicReq.stream === true) {
-    return { status: 200, response: streamResponse(providerRes, opts, args.pingIntervalMs ?? 15_000) };
+    return { status: 200, response: streamResponse(providerRes, opts, args.credential, args.pingIntervalMs ?? 15_000) };
   }
 
   // Non-streaming caller: consume the mandatory stream and rebuild the Message.
@@ -85,7 +90,11 @@ export async function responsesForward(args: ResponsesForwardArgs): Promise<Resp
     const text = await providerRes.text();
     events.push(...translator.push(text), ...translator.finish());
   } catch (e) {
-    return { err: networkError(`WHAM stream failed: ${e instanceof Error ? e.message : String(e)}`) };
+    return {
+      err: networkError(
+        scrubCredentialError(`WHAM stream failed: ${e instanceof Error ? e.message : String(e)}`, args.credential),
+      ),
+    };
   }
   return {
     status: 200,
@@ -163,6 +172,7 @@ export function recomposeMessage(events: readonly AnthropicStreamEvent[]): Recor
 function streamResponse(
   providerRes: Response,
   opts: { requestedModel: string; toolNames: ReadonlyMap<string, string> },
+  credential: ResolvedCredential,
   pingIntervalMs: number,
 ): Response {
   const translator = new ResponsesStreamTranslator(opts);
@@ -198,7 +208,11 @@ function streamResponse(
         }
         emit(translator.finish());
       } catch (e) {
-        emit(translator.abort(`WHAM stream failed: ${e instanceof Error ? e.message : String(e)}`));
+        emit(
+          translator.abort(
+            scrubCredentialError(`WHAM stream failed: ${e instanceof Error ? e.message : String(e)}`, credential),
+          ),
+        );
       }
       alive = false;
       clearInterval(ping);

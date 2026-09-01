@@ -131,7 +131,10 @@ async function verifyThroughExchange(
       githubToken: tokens.accessToken,
     });
   } catch (e) {
-    return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+    return {
+      ok: false,
+      detail: scrubSecrets(e instanceof Error ? e.message : String(e), [tokens.accessToken, tokens.refreshToken ?? '']),
+    };
   }
   const url = `${bought.apiBaseUrl}/models`;
   try {
@@ -160,7 +163,14 @@ async function verifyThroughExchange(
     if (models.length === 0) return { ok: false, detail: 'the account lists no model: nothing to serve' };
     return { ok: true, detail: `token exchanged, ${String(models.length)} models listed`, models };
   } catch (e) {
-    return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+    return {
+      ok: false,
+      detail: scrubSecrets(e instanceof Error ? e.message : String(e), [
+        tokens.accessToken,
+        tokens.refreshToken ?? '',
+        bought.token,
+      ]),
+    };
   }
 }
 
@@ -190,10 +200,13 @@ export async function verifyToken(
     if (res.status === 403 && def.entitlementMessage !== undefined) {
       return { ok: false, detail: `HTTP 403: ${def.entitlementMessage}` };
     }
-    const detail = scrubSecrets(await res.text(), [tokens.accessToken]).slice(0, 200);
+    const detail = scrubSecrets(await res.text(), [tokens.accessToken, tokens.refreshToken ?? '']).slice(0, 200);
     return { ok: false, detail: `HTTP ${String(res.status)}: ${detail}` };
   } catch (e) {
-    return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+    return {
+      ok: false,
+      detail: scrubSecrets(e instanceof Error ? e.message : String(e), [tokens.accessToken, tokens.refreshToken ?? '']),
+    };
   }
 }
 

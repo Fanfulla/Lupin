@@ -7,6 +7,8 @@
 // (`tokenExchange`), so the request path never grows a provider check
 // (CLAUDE.md rule 4).
 
+import { scrubSecrets } from '../core/errors.js';
+
 export interface CopilotToken {
   /** Bearer for the inference calls. */
   token: string;
@@ -67,7 +69,8 @@ async function exchange(url: string, githubToken: string, fetchImpl: typeof fetc
       signal: AbortSignal.timeout(15_000),
     });
   } catch (e) {
-    throw new CopilotExchangeError(0, `Copilot token exchange unreachable: ${e instanceof Error ? e.message : String(e)}`);
+    const message = scrubSecrets(e instanceof Error ? e.message : String(e), [githubToken]);
+    throw new CopilotExchangeError(0, `Copilot token exchange unreachable: ${message}`);
   }
   if (!res.ok) {
     // 401 here means the GitHub token is fine but this account has no Copilot

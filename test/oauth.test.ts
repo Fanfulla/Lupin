@@ -12,6 +12,7 @@ import {
 import { validateConfig } from '../src/config/config.js';
 import {
   pollDeviceToken,
+  refreshOAuthTokens,
   resolveOAuthAccessToken,
   startDeviceAuthorization,
   OAuthError,
@@ -179,6 +180,50 @@ describe('device flow (RFC 8628, DESIGN-OAUTH §4)', () => {
 });
 
 describe('token resolution and refresh (DESIGN-OAUTH §4.3)', () => {
+  it('redacts opaque stored tokens from refresh rejection details', async () => {
+    const current = tokens({
+      accessToken: 'opaque.access/value',
+      refreshToken: 'opaque.refresh/value',
+    });
+    const rejected: typeof fetch = () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: 'temporarily_unavailable',
+            error_description: `access ${current.accessToken}; refresh ${current.refreshToken}`,
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+
+    const message = await refreshOAuthTokens(fake.def, current, rejected).then(
+      () => 'unexpected success',
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+
+    expect(message).toContain('[redacted]');
+    expect(message).not.toContain(current.accessToken);
+    expect(message).not.toContain(current.refreshToken);
+  });
+
+  it('redacts an opaque refresh token from token-endpoint network errors', async () => {
+    const current = tokens({ refreshToken: 'opaque.refresh/network-value' });
+    const down: typeof fetch = () =>
+      Promise.reject(
+        new Error(`client ${fake.def.clientId} uses refresh_token; socket closed near ${current.refreshToken}`),
+      );
+
+    const message = await refreshOAuthTokens(fake.def, current, down).then(
+      () => 'unexpected success',
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+
+    expect(message).toContain('[redacted]');
+    expect(message).not.toContain(current.refreshToken);
+    expect(message).toContain(fake.def.clientId);
+    expect(message).toContain('refresh_token');
+  });
+
   it('fresh token → returned as-is, no refresh call', async () => {
     setOAuthTokens(fake.def.id, tokens());
     const access = await resolveOAuthAccessToken(fake.def);

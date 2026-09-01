@@ -3,7 +3,7 @@
 // All translation logic lives in core/; this module only moves bytes.
 
 import type { ProfileConfig } from '../config/config.js';
-import type { ResolvedCredential } from './credential.js';
+import { scrubCredentialError, type ResolvedCredential } from './credential.js';
 import { buildToolNameMap, mapAnthropicRequest, type AnthropicRequest } from '../core/request.js';
 import { mapOpenAIResponse, type OpenAIResponse } from '../core/response.js';
 import { OpenAIStreamTranslator, type AnthropicStreamEvent, type StreamOptions } from '../core/stream.js';
@@ -50,14 +50,19 @@ export async function translateForward(args: TranslateArgs): Promise<TranslateRe
       signal: AbortSignal.timeout(args.timeoutMs),
     });
   } catch (e) {
-    return { err: networkError(e instanceof Error ? e.message : String(e)) };
+    return { err: networkError(scrubCredentialError(e instanceof Error ? e.message : String(e), args.credential)) };
   }
 
   if (!providerRes.ok) {
     const raw = await providerRes.text();
     const retryAfter = providerRes.headers.get('retry-after');
     return {
-      err: normalizeProviderError(providerRes.status, raw, retryAfter ?? undefined, new Set(args.profile.quirks ?? [])),
+      err: normalizeProviderError(
+        providerRes.status,
+        scrubCredentialError(raw, args.credential),
+        retryAfter ?? undefined,
+        new Set(args.profile.quirks ?? []),
+      ),
     };
   }
 
@@ -70,7 +75,7 @@ export async function translateForward(args: TranslateArgs): Promise<TranslateRe
   };
 
   if (anthropicReq.stream === true) {
-    return { status: 200, response: streamResponse(providerRes, opts, args.pingIntervalMs ?? 15_000) };
+    return { status: 200, response: streamResponse(providerRes, opts, args.credential, args.pingIntervalMs ?? 15_000) };
   }
 
   let parsed: OpenAIResponse;
@@ -95,7 +100,12 @@ export async function translateForward(args: TranslateArgs): Promise<TranslateRe
 }
 
 /** Provider SSE → Anthropic SSE, streamed through the core state machine. */
-function streamResponse(providerRes: Response, opts: StreamOptions, pingIntervalMs: number): Response {
+function streamResponse(
+  providerRes: Response,
+  opts: StreamOptions,
+  credential: ResolvedCredential,
+  pingIntervalMs: number,
+): Response {
   const translator = new OpenAIStreamTranslator(opts);
   const encoder = new TextEncoder();
   const decoder = new TextDecoder(); // stream:true handles UTF-8 split across transport chunks (§5 insidia d)
@@ -124,7 +134,11 @@ function streamResponse(providerRes: Response, opts: StreamOptions, pingInterval
         }
         emit(translator.finish()); // no-op if [DONE] already closed the message (§5)
       } catch (e) {
-        emit(translator.abort(`provider stream failed: ${e instanceof Error ? e.message : String(e)}`));
+        emit(
+          translator.abort(
+            scrubCredentialError(`provider stream failed: ${e instanceof Error ? e.message : String(e)}`, credential),
+          ),
+        );
       }
       alive = false;
       clearInterval(ping);

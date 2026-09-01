@@ -5,6 +5,7 @@ import { resolveApiKey, type ProfileConfig } from '../config/config.js';
 import { movedToKeychainAt } from '../config/credentials.js';
 import { keychainLabel } from '../config/keychain.js';
 import { OAUTH_PROVIDERS, splitAccountKey, type OAuthProviderDef } from '../providers/oauth.js';
+import { scrubSecrets } from '../core/errors.js';
 import { resolveOAuthAccessToken } from './oauth.js';
 import { clearCopilotTokenCache, resolveCopilotToken } from './copilot-token.js';
 
@@ -20,6 +21,14 @@ export interface ResolvedCredential {
   baseUrl?: string;
   /** HTTPS destination allowlist carried by high-value OAuth descriptors. */
   allowedHosts?: string[];
+}
+
+/** Redact both the wire header value and the raw bearer from an error. */
+export function scrubCredentialError(message: string, credential: ResolvedCredential): string {
+  const exact = [credential.value];
+  const bearer = /^Bearer\s+(.+)$/i.exec(credential.value)?.[1];
+  if (bearer !== undefined) exact.push(bearer);
+  return scrubSecrets(message, exact);
 }
 
 export function credentialDestinationAllowed(url: string, allowedHosts?: readonly string[]): boolean {

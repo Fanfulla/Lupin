@@ -208,6 +208,36 @@ describe('codeassist lane: non-streaming caller', () => {
 });
 
 describe('codeassist lane: streaming caller', () => {
+  it('redacts an opaque credential echoed by a streaming reader failure', async () => {
+    const accessToken = 'opaque.access/codeassist-stream';
+    process.env['FAKE_KEY'] = accessToken;
+    const fetchImpl: typeof fetch = (input) => {
+      if (String(input).endsWith(':loadCodeAssist')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ currentTier: { id: 'standard-tier' }, cloudaicompanionProject: 'proj-live' })),
+        );
+      }
+      return Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error(`stream closed for ${accessToken}`));
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        ),
+      );
+    };
+    const app = createApp(config(), { fetchImpl });
+    const res = await app.request(
+      ask({ model: 'claude-opus-5', max_tokens: 100, stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+    );
+    const text = await res.text();
+
+    expect(text).toContain('[redacted]');
+    expect(text).not.toContain(accessToken);
+  });
+
   it('re-emits the Anthropic event sequence', async () => {
     const { fetchImpl } = fakeCodeAssist('codeassist-stream-toolresult.sse');
     const app = createApp(config(), { fetchImpl });

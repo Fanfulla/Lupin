@@ -11,7 +11,7 @@ import type { AddressInfo } from 'node:net';
 import type { OAuthTokens } from '../config/credentials.js';
 import type { OAuthProviderDef } from '../providers/oauth.js';
 import { tokenUrl } from '../providers/oauth.js';
-import { OAuthError, postOAuthForm, tokensFromResponse } from './oauth.js';
+import { OAuthError, oauthFormSecretValues, postOAuthForm, tokensFromResponse } from './oauth.js';
 
 export interface PkcePair {
   verifier: string;
@@ -83,7 +83,7 @@ export async function runPkceLogin(def: OAuthProviderDef, hooks: PkceLoginHooks)
     };
     if (def.clientSecret !== undefined) form['client_secret'] = def.clientSecret;
     const r = await postOAuthForm(tokenUrl(def), form, hooks.fetchImpl ?? fetch);
-    return tokensFromResponse(r);
+    return tokensFromResponse(r, Date.now(), oauthFormSecretValues(form));
   } finally {
     await cb.close();
   }

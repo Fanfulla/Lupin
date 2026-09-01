@@ -21,6 +21,7 @@ import type { OAuthProviderDef } from '../providers/oauth.js';
 import {
   credentialDestinationAllowed,
   resolveCredential,
+  scrubCredentialError,
   type ResolvedCredential,
 } from './credential.js';
 import { PROVIDER_TIMEOUT_MS } from './dispatcher.js';
@@ -590,7 +591,11 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
           });
         } catch (e) {
           health.recordFailure(profileName);
-          return { retryable: networkError(e instanceof Error ? e.message : String(e)) };
+          return {
+            retryable: networkError(
+              scrubCredentialError(e instanceof Error ? e.message : String(e), credential),
+            ),
+          };
         }
         // reactive 401 on OAuth: one refresh + one retry, never a loop (DESIGN-OAUTH §4.3)
         if (providerRes.status === 401 && profile.auth.type === 'oauth' && oauthAttempt === 0) {
@@ -612,7 +617,12 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
         }
         const raw = await providerRes.text();
         const retryAfter = providerRes.headers.get('retry-after');
-        const err = normalizeProviderError(providerRes.status, raw, retryAfter ?? undefined, new Set(profile.quirks ?? []));
+        const err = normalizeProviderError(
+          providerRes.status,
+          scrubCredentialError(raw, credential),
+          retryAfter ?? undefined,
+          new Set(profile.quirks ?? []),
+        );
         if (isRetryable(err)) {
           health.recordFailure(profileName);
           return { retryable: err };
