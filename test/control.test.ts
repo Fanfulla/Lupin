@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../src/server/ingress.js';
 import { defaultConfigPath, loadConfig, saveConfig, type LupinConfig } from '../src/config/config.js';
-import { getCredential, getOAuthTokens } from '../src/config/credentials.js';
+import { getCredential, getOAuthTokens, setCredential } from '../src/config/credentials.js';
 import type { ControlDeps } from '../src/server/control.js';
 import { clearCatalogCache } from '../src/providers/catalog.js';
 import { startFakePkce, type FakePkce } from './helpers/fake-pkce.js';
@@ -57,6 +57,7 @@ afterEach(async () => {
   fake = undefined;
   if (prevDir === undefined) delete process.env.LUPIN_DIR;
   else process.env.LUPIN_DIR = prevDir;
+  delete process.env.X;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -72,6 +73,19 @@ function setupKey(app: ReturnType<typeof appWithControl>, providerId: string, ke
     method: 'POST',
     headers: jsonAuth,
     body: JSON.stringify({ providerId, key }),
+  });
+}
+
+function replaceKey(
+  app: ReturnType<typeof appWithControl>,
+  profile: string,
+  key: string,
+  saveAnyway = false,
+) {
+  return app.request('/v1/lupin/credentials/key', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ profile, key, ...(saveAnyway ? { saveAnyway: true } : {}) }),
   });
 }
 
@@ -273,6 +287,125 @@ describe('POST /v1/lupin/setup-key', () => {
     expect(persisted.port).toBe(7788);
     expect(persisted.localToken).toBe(TOKEN);
     expect(persisted.activeProfile).toBe('gpt');
+  });
+});
+
+describe('POST /v1/lupin/credentials/key', () => {
+  it('rejects a request without the local token before touching the credential', async () => {
+    setCredential('X', 'old-fake-key');
+    const res = await appWithControl().request('/v1/lupin/credentials/key', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ profile: 'a', key: 'replacement-fake-key' }),
+    });
+    expect(res.status).toBe(401);
+    expect(getCredential('X')).toBe('old-fake-key');
+  });
+
+  it('keeps the old key and complete config when verification fails', async () => {
+    setCredential('X', 'old-fake-key');
+    const before = structuredClone(loadConfig());
+    const app = appWithControl({
+      testConfiguredProfileKey: async () => ({
+        ok: false,
+        detail: 'provider echoed replacement-fake-key',
+      }),
+    });
+
+    const res = await replaceKey(app, 'a', 'replacement-fake-key');
+    const body = (await res.json()) as { ok: boolean; error: string; canSaveAnyway?: boolean };
+
+    expect(res.status).toBe(400);
+    expect(body.canSaveAnyway).toBe(true);
+    expect(body.error).not.toContain('replacement-fake-key');
+    expect(getCredential('X')).toBe('old-fake-key');
+    expect(loadConfig()).toEqual(before);
+  });
+
+  it('replaces only the shared credential and reports every affected profile', async () => {
+    setCredential('X', 'old-fake-key');
+    const before = structuredClone(loadConfig());
+    const app = appWithControl({ testConfiguredProfileKey: async () => ({ ok: true, detail: 'verified' }) });
+
+    const res = await replaceKey(app, 'a', 'replacement-fake-key');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, profile: 'a', sharedProfiles: ['a', 'b'] });
+    expect(getCredential('X')).toBe('replacement-fake-key');
+    expect(loadConfig()).toEqual(before);
+  });
+
+  it('stores after an explicit save-anyway confirmation without changing config', async () => {
+    setCredential('X', 'old-fake-key');
+    const before = structuredClone(loadConfig());
+    const app = appWithControl({ testConfiguredProfileKey: async () => ({ ok: false, detail: 'offline' }) });
+
+    const res = await replaceKey(app, 'a', 'replacement-fake-key', true);
+
+    expect(res.status).toBe(200);
+    expect(getCredential('X')).toBe('replacement-fake-key');
+    expect(loadConfig()).toEqual(before);
+  });
+
+  it.each(['external-fake-key', ''])('refuses a store write while env X overrides it (%j)', async (envValue) => {
+    process.env.X = envValue;
+    setCredential('X', 'old-fake-key');
+    const before = structuredClone(loadConfig());
+    let probes = 0;
+    const app = appWithControl({
+      testConfiguredProfileKey: async () => {
+        probes++;
+        return { ok: true, detail: 'verified' };
+      },
+    });
+
+    const res = await replaceKey(app, 'a', 'replacement-fake-key');
+
+    expect(res.status).toBe(409);
+    expect(probes).toBe(0);
+    expect(loadConfig()).toEqual(before);
+    delete process.env.X;
+    expect(getCredential('X')).toBe('old-fake-key');
+  });
+
+  it('rejects unknown, OAuth and keyless profiles without probing', async () => {
+    const config = baseConfig();
+    config.profiles.oauth = {
+      provider: 'openaisub',
+      mode: 'responses',
+      auth: { type: 'oauth', provider: 'openai' },
+      slots: { opus: 'm', sonnet: 'm', haiku: 'm' },
+    };
+    config.profiles.local = {
+      provider: 'ollama',
+      mode: 'passthrough',
+      auth: { type: 'none' },
+      slots: { opus: 'm', sonnet: 'm', haiku: 'm' },
+    };
+    saveConfig(config);
+    let probes = 0;
+    const app = appWithControl({
+      testConfiguredProfileKey: async () => {
+        probes++;
+        return { ok: true, detail: 'verified' };
+      },
+    }, config);
+
+    expect((await replaceKey(app, 'missing', 'replacement-fake-key')).status).toBe(404);
+    expect((await replaceKey(app, 'oauth', 'replacement-fake-key')).status).toBe(400);
+    expect((await replaceKey(app, 'local', 'replacement-fake-key')).status).toBe(400);
+    expect(probes).toBe(0);
+  });
+
+  it('rejects malformed optional flags before probing', async () => {
+    const app = appWithControl({ testConfiguredProfileKey: async () => ({ ok: true, detail: 'verified' }) });
+    const res = await app.request('/v1/lupin/credentials/key', {
+      method: 'POST',
+      headers: jsonAuth,
+      body: JSON.stringify({ profile: 'a', key: 'replacement-fake-key', saveAnyway: 'yes' }),
+    });
+    expect(res.status).toBe(400);
+    expect(getCredential('X')).toBeUndefined();
   });
 });
 

@@ -17,6 +17,7 @@ import {
   OAuthError,
 } from '../src/server/oauth.js';
 import type { DeviceOAuthProviderDef } from '../src/providers/oauth.js';
+import { OAUTH_PROVIDERS, asDeviceFlow, tokenUrl } from '../src/providers/oauth.js';
 import { startFakeOAuth, type FakeOAuth } from './helpers/fake-oauth.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'lupin-oauth-'));
@@ -64,6 +65,39 @@ afterEach(() => {
 });
 
 describe('device flow (RFC 8628, DESIGN-OAUTH §4)', () => {
+  it('the xAI descriptor uses the reviewed public device flow and subscription profile', () => {
+    const def = OAUTH_PROVIDERS.xai;
+    expect(def).toBeDefined();
+    if (def === undefined) throw new Error('xAI OAuth descriptor missing');
+    expect(asDeviceFlow(def).flow).toMatchObject({
+      kind: 'device',
+      deviceAuthorizationPath: '/oauth2/device/code',
+      scope: 'openid profile email offline_access grok-cli:access api:access',
+    });
+    expect(def.clientId).toBe('b1a00492-073a-47ea-816f-4c329264a828');
+    expect(tokenUrl(def)).toBe('https://auth.x.ai/oauth2/token');
+    expect(def.defaultProfileId).toBe('grok-sub');
+    expect(def.allowedInferenceHosts).toEqual(['x.ai']);
+  });
+
+  it('sends an optional device scope and clamps a zero polling interval', async () => {
+    const scoped: DeviceOAuthProviderDef = {
+      ...fake.def,
+      flow: {
+        ...fake.def.flow,
+        scope: 'openid offline_access api:access',
+      },
+    };
+    const authorization = await startDeviceAuthorization(scoped);
+    const request = fake.requests.find((entry) => entry.path === '/api/oauth/device_authorization');
+    expect(request?.form['scope']).toBe('openid offline_access api:access');
+    expect(authorization.intervalSec).toBe(1);
+
+    fake.requests.length = 0;
+    await startDeviceAuthorization(fake.def);
+    expect(fake.requests[0]?.form).not.toHaveProperty('scope');
+  });
+
   it('start → pending → granted', async () => {
     fake.deviceQueue.push({ error: 'authorization_pending' }, { error: 'authorization_pending' });
     const auth = await startDeviceAuthorization(fake.def);
@@ -129,6 +163,19 @@ describe('device flow (RFC 8628, DESIGN-OAUTH §4)', () => {
       code: 'access_denied',
     });
   });
+
+  it('maps a descriptor-declared device-flow entitlement error without calling it a bad login', async () => {
+    const entitled: DeviceOAuthProviderDef = {
+      ...fake.def,
+      entitlementErrors: ['permission_denied'],
+      entitlementMessage: 'This account tier cannot use OAuth inference. Set XAI_API_KEY instead.',
+    };
+    fake.deviceQueue.push({ error: 'permission_denied' });
+    const authorization = await startDeviceAuthorization(entitled);
+    await expect(
+      pollDeviceToken(entitled, authorization, { sleep: () => Promise.resolve() }),
+    ).rejects.toMatchObject({ code: 'entitlement_denied' });
+  });
 });
 
 describe('token resolution and refresh (DESIGN-OAUTH §4.3)', () => {
@@ -165,6 +212,25 @@ describe('token resolution and refresh (DESIGN-OAUTH §4.3)', () => {
     setOAuthTokens(fake.def.id, tokens({ expiresAt: Date.now() + 60_000 }));
     await expect(resolveOAuthAccessToken(fake.def)).rejects.toThrow(/from the hub/);
     expect(getOAuthTokens(fake.def.id)).toBeUndefined(); // never reuse rejected refresh tokens
+  });
+
+  it('an xAI entitlement refusal keeps the stored grant and points to the API-key fallback', async () => {
+    const def = OAUTH_PROVIDERS.xai;
+    if (def === undefined) throw new Error('xAI OAuth descriptor missing');
+    setOAuthTokens(def.id, tokens({ expiresAt: Date.now() + 60_000 }));
+    const denied: typeof fetch = () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: 'permission_denied' }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+
+    await expect(resolveOAuthAccessToken(def, { fetchImpl: denied })).rejects.toMatchObject({
+      code: 'entitlement_denied',
+    });
+    await expect(resolveOAuthAccessToken(def, { fetchImpl: denied })).rejects.toThrow(/XAI_API_KEY/);
+    expect(getOAuthTokens(def.id)?.refreshToken).toBe('refresh-old');
   });
 
   it('no stored credentials → clear not_logged_in error', async () => {

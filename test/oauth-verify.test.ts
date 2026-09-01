@@ -93,6 +93,30 @@ describe('verifyToken', () => {
     expect(verdict.detail).toContain('Code Assist is not enabled');
   });
 
+  it('a verification error cannot echo the submitted OAuth access token', async () => {
+    const base = await listen(401, '{"error":{"message":"token tok-123 rejected"}}');
+    const verdict = await verifyToken(def({ verifyUrl: `${base}/v1/models` }), tokens);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.detail).not.toContain('tok-123');
+    expect(verdict.detail).toContain('[redacted]');
+  });
+
+  it('a descriptor-defined 403 explains entitlement and the safe fallback', async () => {
+    const base = await listen(403, '{"error":"permission_denied"}');
+    const verdict = await verifyToken(
+      def({
+        verifyUrl: `${base}/v1/models`,
+        entitlementErrors: ['permission_denied'],
+        entitlementMessage: 'This account cannot use OAuth inference. Set XAI_API_KEY instead.',
+      }),
+      tokens,
+    );
+    expect(verdict).toEqual({
+      ok: false,
+      detail: 'HTTP 403: This account cannot use OAuth inference. Set XAI_API_KEY instead.',
+    });
+  });
+
   it('a free tier account is told so at login, before its first session', async () => {
     const base = await listen(
       200,

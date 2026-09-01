@@ -193,6 +193,113 @@ pub(crate) struct QuickModel {
     pub phase: QuickPhase,
 }
 
+pub(crate) enum CredentialMode {
+    Input {
+        profile: String,
+        value: String,
+    },
+    SaveAnywayConfirm {
+        profile: String,
+        key: String,
+        message: String,
+    },
+}
+
+enum CredentialAction {
+    Stay(CredentialMode),
+    Note(String, CredentialMode),
+    Cancel(String),
+    Submit {
+        profile: String,
+        key: String,
+        save_anyway: bool,
+    },
+}
+
+fn key_change_for(snap: &api::Snapshot, selected: usize) -> Result<CredentialMode, String> {
+    let config = snap
+        .config
+        .as_ref()
+        .ok_or_else(|| "no profile selected".to_string())?;
+    let name = snap
+        .profile_names
+        .get(selected)
+        .ok_or_else(|| "no profile selected".to_string())?;
+    let profile = config
+        .profiles
+        .get(name)
+        .ok_or_else(|| "no profile selected".to_string())?;
+    if !profile.auth.is_api_key() {
+        return Err(format!(
+            "profile \"{name}\" does not use an API key; press p to manage providers"
+        ));
+    }
+    Ok(CredentialMode::Input {
+        profile: name.clone(),
+        value: String::new(),
+    })
+}
+
+fn handle_credential_key(mode: CredentialMode, key: KeyCode) -> CredentialAction {
+    match mode {
+        CredentialMode::Input { profile, mut value } => match key {
+            KeyCode::Esc => {
+                value.clear();
+                CredentialAction::Cancel("API key replacement cancelled".to_string())
+            }
+            KeyCode::Backspace => {
+                value.pop();
+                CredentialAction::Stay(CredentialMode::Input { profile, value })
+            }
+            KeyCode::Enter if value.is_empty() => CredentialAction::Note(
+                "type or paste the replacement API key first".to_string(),
+                CredentialMode::Input { profile, value },
+            ),
+            KeyCode::Enter => CredentialAction::Submit {
+                profile,
+                key: value,
+                save_anyway: false,
+            },
+            KeyCode::Char(c) => {
+                value.push(c);
+                CredentialAction::Stay(CredentialMode::Input { profile, value })
+            }
+            _ => CredentialAction::Stay(CredentialMode::Input { profile, value }),
+        },
+        CredentialMode::SaveAnywayConfirm {
+            profile,
+            key: mut entered_key,
+            message,
+        } => match key {
+            KeyCode::Char('y') => CredentialAction::Submit {
+                profile,
+                key: entered_key,
+                save_anyway: true,
+            },
+            KeyCode::Enter | KeyCode::Char('n') | KeyCode::Esc => {
+                entered_key.clear();
+                CredentialAction::Cancel(format!("{message} (old key kept)"))
+            }
+            _ => CredentialAction::Stay(CredentialMode::SaveAnywayConfirm {
+                profile,
+                key: entered_key,
+                message,
+            }),
+        },
+    }
+}
+
+fn replacement_message(profile: &str, shared_profiles: &[String]) -> String {
+    if shared_profiles.len() <= 1 {
+        format!("API key replaced for {profile}")
+    } else {
+        format!(
+            "API key replaced for {profile}; shared by {}",
+            shared_profiles.join(", ")
+        )
+    }
+}
+
 /// Where a finished catalogue fetch lands: the fetch happens after a draw
 /// (the Loading pattern the onboarding uses), never inside key handling.
 enum CatalogSink {
@@ -281,6 +388,9 @@ fn run(
     let mut slots_edit: Option<ui::SlotsEdit> = None;
     // Quick-model (`t`): one id aimed at the whole selected profile.
     let mut quick: Option<QuickModel> = None;
+    // Credential rotation (`c`): separate from provider setup so replacing a
+    // secret can never recreate or reset the profile it belongs to.
+    let mut credential: Option<CredentialMode> = None;
     // A catalogue fetch owed to a just-opened editor: resolved after the next
     // draw, so the screen says "loading" instead of freezing silently.
     let mut catalog_pending: Option<CatalogSink> = None;
@@ -323,6 +433,7 @@ fn run(
                 agents_edit.as_ref(),
                 slots_edit.as_ref(),
                 quick.as_ref(),
+                credential.as_ref(),
                 add_provider.as_ref(),
             )
         })?;
@@ -433,6 +544,7 @@ fn run(
                 handle_paste(
                     text,
                     add_provider.as_mut(),
+                    credential.as_mut(),
                     slots_edit.as_mut(),
                     quick.as_mut(),
                     agents_edit.as_mut(),
@@ -448,6 +560,50 @@ fn run(
                 // route or consume the key.
                 if is_ctrl_c(key.code, key.modifiers) {
                     return Ok(());
+                }
+                if let Some(mode) = credential.take() {
+                    match handle_credential_key(mode, key.code) {
+                        CredentialAction::Stay(mode) => credential = Some(mode),
+                        CredentialAction::Note(note, mode) => {
+                            credential = Some(mode);
+                            message = note;
+                        }
+                        CredentialAction::Cancel(reason) => message = reason,
+                        CredentialAction::Submit {
+                            profile,
+                            mut key,
+                            save_anyway,
+                        } => {
+                            let Some(identity) = onboarding_identity(&snap, bootstrap_identity)
+                            else {
+                                key.clear();
+                                message = "daemon not answering: restart with `lupin`".to_string();
+                                continue;
+                            };
+                            match api::replace_key(&identity, &profile, &key, save_anyway) {
+                                Ok(result) => {
+                                    key.clear();
+                                    message =
+                                        replacement_message(&profile, &result.shared_profiles);
+                                    snap = api::snapshot(cfg_path, bootstrap_identity);
+                                    last = Instant::now();
+                                }
+                                Err(error) if error.can_save_anyway && !save_anyway => {
+                                    let shown = redact_key_from_error(&error.message, &key);
+                                    credential = Some(CredentialMode::SaveAnywayConfirm {
+                                        profile,
+                                        key,
+                                        message: shown,
+                                    });
+                                }
+                                Err(error) => {
+                                    message = redact_key_from_error(&error.message, &key);
+                                    key.clear();
+                                }
+                            }
+                        }
+                    }
+                    continue;
                 }
                 if let Some(mode) = add_provider.take() {
                     match handle_add_provider_key(
@@ -745,6 +901,15 @@ fn run(
                     }
                     KeyCode::Char('p') => {
                         add_provider = Some(AddProviderMode::Loading);
+                    }
+                    KeyCode::Char('c') => {
+                        match key_change_for(&snap, selected) {
+                            Ok(mode) => {
+                                message = "replacement key: old key stays active until verification succeeds".to_string();
+                                credential = Some(mode);
+                            }
+                            Err(error) => message = error,
+                        }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         selected = selected.saturating_sub(1);
@@ -1346,6 +1511,7 @@ fn clear_cancelled_key(value: &mut String) {
 fn handle_paste(
     text: &str,
     add_provider: Option<&mut AddProviderMode>,
+    credential: Option<&mut CredentialMode>,
     slots_edit: Option<&mut ui::SlotsEdit>,
     quick: Option<&mut QuickModel>,
     agents_edit: Option<&mut ui::AgentsEdit>,
@@ -1353,6 +1519,15 @@ fn handle_paste(
 ) {
     let clean: String = text.chars().filter(|c| !c.is_control()).collect();
     if clean.is_empty() {
+        return;
+    }
+    if let Some(mode) = credential {
+        match mode {
+            CredentialMode::Input { value, .. } => value.push_str(clean.trim()),
+            CredentialMode::SaveAnywayConfirm { .. } => {
+                *message = "nothing here takes pasted text".to_string()
+            }
+        }
         return;
     }
     if let Some(mode) = add_provider {
@@ -2664,9 +2839,10 @@ fn clamp_selected(selected: &mut usize, len: usize) {
 mod tests {
     use super::{
         agent_rows, agents_table, clamp_selected, clear_cancelled_key, handle_add_provider_key,
-        handle_slots_key, onboarding_error, order_message, promote_success_to_dashboard, push_pick,
-        redact_key_from_error, submit_key, AddProviderAction, AddProviderMode, ModelPickTarget,
-        SlotsAction,
+        handle_credential_key, handle_paste, handle_slots_key, key_change_for, onboarding_error,
+        order_message, promote_success_to_dashboard, push_pick, redact_key_from_error,
+        replacement_message, submit_key, AddProviderAction, AddProviderMode, CredentialAction,
+        CredentialMode, ModelPickTarget, SlotsAction,
     };
     use crate::api::{AuthKind, ProviderRow, Snapshot};
     use crate::ui;
@@ -3080,6 +3256,119 @@ mod tests {
         let mut value = "secret-value".to_string();
         clear_cancelled_key(&mut value);
         assert!(value.is_empty());
+    }
+
+    fn profile_snapshot(auth_type: &str) -> Snapshot {
+        let config = serde_json::from_str(&format!(
+            r#"{{
+                "activeProfile":"main","port":3456,"localToken":"tok",
+                "profiles":{{"main":{{
+                    "provider":"provider","mode":"translate",
+                    "auth":{{"type":"{auth_type}","apiKeyRef":"IGNORED"}},
+                    "slots":{{"opus":"a","sonnet":"b","haiku":"c"}}
+                }}}}
+            }}"#
+        ))
+        .expect("config");
+        Snapshot {
+            config: Some(config),
+            health: None,
+            recent: Vec::new(),
+            profile_names: vec!["main".to_string()],
+        }
+    }
+
+    #[test]
+    fn change_key_opens_only_for_a_key_backed_selected_profile() {
+        assert!(matches!(
+            key_change_for(&profile_snapshot("bearer"), 0),
+            Ok(CredentialMode::Input { profile, value }) if profile == "main" && value.is_empty()
+        ));
+        let oauth = match key_change_for(&profile_snapshot("oauth"), 0) {
+            Err(error) => error,
+            Ok(_) => panic!("OAuth is not a key"),
+        };
+        assert!(oauth.contains("does not use an API key"), "{oauth}");
+        assert!(oauth.contains("p"), "{oauth}");
+    }
+
+    #[test]
+    fn credential_input_masks_state_transitions_and_keeps_q_literal() {
+        let mode = CredentialMode::Input {
+            profile: "main".to_string(),
+            value: "se".to_string(),
+        };
+        let CredentialAction::Stay(CredentialMode::Input { value, .. }) =
+            handle_credential_key(mode, KeyCode::Char('q'))
+        else {
+            panic!("input must stay active");
+        };
+        assert_eq!(value, "seq");
+
+        let mode = CredentialMode::Input {
+            profile: "main".to_string(),
+            value: "replacement-fake-key".to_string(),
+        };
+        assert!(matches!(
+            handle_credential_key(mode, KeyCode::Enter),
+            CredentialAction::Submit { profile, key, save_anyway: false }
+                if profile == "main" && key == "replacement-fake-key"
+        ));
+    }
+
+    #[test]
+    fn credential_input_accepts_a_sanitized_bracketed_paste() {
+        let mut mode = CredentialMode::Input {
+            profile: "main".to_string(),
+            value: String::new(),
+        };
+        handle_paste(
+            "  replacement-fake-key\r\n",
+            None,
+            Some(&mut mode),
+            None,
+            None,
+            None,
+            &mut String::new(),
+        );
+        let CredentialMode::Input { value, .. } = mode else {
+            panic!("input remains active");
+        };
+        assert_eq!(value, "replacement-fake-key");
+    }
+
+    #[test]
+    fn save_anyway_is_explicit_and_every_default_key_keeps_the_old_key() {
+        let confirm = || CredentialMode::SaveAnywayConfirm {
+            profile: "main".to_string(),
+            key: "replacement-fake-key".to_string(),
+            message: "provider unavailable".to_string(),
+        };
+        assert!(matches!(
+            handle_credential_key(confirm(), KeyCode::Char('y')),
+            CredentialAction::Submit {
+                save_anyway: true,
+                ..
+            }
+        ));
+        for key in [KeyCode::Enter, KeyCode::Char('n'), KeyCode::Esc] {
+            assert!(matches!(
+                handle_credential_key(confirm(), key),
+                CredentialAction::Cancel(ref reason) if reason.contains("old key kept")
+            ));
+        }
+    }
+
+    #[test]
+    fn replacement_message_names_shared_impact_without_credential_metadata() {
+        assert_eq!(
+            replacement_message("main", &["main".to_string()]),
+            "API key replaced for main"
+        );
+        assert_eq!(
+            replacement_message("main", &["backup".to_string(), "main".to_string()]),
+            "API key replaced for main; shared by backup, main"
+        );
     }
 
     #[test]

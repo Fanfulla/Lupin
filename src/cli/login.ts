@@ -14,6 +14,7 @@ import { PROVIDERS, type ProviderDef } from '../providers/registry.js';
 import { resolveCopilotToken } from '../server/copilot-token.js';
 import { freeTierNotice } from '../providers/tiers.js';
 import { accountKey, type OAuthProviderDef } from '../providers/oauth.js';
+import { scrubSecrets } from '../core/errors.js';
 
 export type BootstrapIdentity = Pick<LupinConfig, 'port' | 'localToken'>;
 
@@ -186,7 +187,11 @@ export async function verifyToken(
         ...(def.verifyBody === undefined ? {} : { notice: tierNotice(def, await res.text()) }),
       };
     }
-    return { ok: false, detail: `HTTP ${String(res.status)}: ${(await res.text()).slice(0, 200)}` };
+    if (res.status === 403 && def.entitlementMessage !== undefined) {
+      return { ok: false, detail: `HTTP 403: ${def.entitlementMessage}` };
+    }
+    const detail = scrubSecrets(await res.text(), [tokens.accessToken]).slice(0, 200);
+    return { ok: false, detail: `HTTP ${String(res.status)}: ${detail}` };
   } catch (e) {
     return { ok: false, detail: e instanceof Error ? e.message : String(e) };
   }

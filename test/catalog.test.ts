@@ -153,6 +153,25 @@ describe('fetchCatalog', () => {
     expect(result.models.map((m) => m.id)).toEqual(['gemini-x', 'plain-y']);
   });
 
+  it('reads a registry-declared models array for language-only catalogues', async () => {
+    const body = JSON.stringify({
+      models: [
+        {
+          id: 'grok-4.6',
+          context_length: 500_000,
+          input_modalities: ['text'],
+          output_modalities: ['text'],
+        },
+      ],
+    });
+    const { impl } = fetchOk(body);
+    const def = defWithCatalog();
+    def.catalogApi = { url: 'https://example.test/language-models', arrayField: 'models' };
+    const result = await fetchCatalog(def, { fetchImpl: impl });
+    if (!result.ok) throw new Error(result.error);
+    expect(result.models).toEqual([{ id: 'grok-4.6', contextWindow: 500_000 }]);
+  });
+
   it('answers ok:false for a provider without a catalogue', async () => {
     const def: ProviderDef = { ...defWithCatalog() };
     delete def.catalogApi;

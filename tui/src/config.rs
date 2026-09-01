@@ -6,6 +6,19 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ProfileAuth {
+    #[serde(default)]
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+impl ProfileAuth {
+    pub fn is_api_key(&self) -> bool {
+        matches!(self.kind.as_str(), "bearer" | "x-api-key")
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProfileConfig {
     // `baseUrl` is in the JSON but the screen never shows it, so it is not
@@ -13,6 +26,8 @@ pub struct ProfileConfig {
     // since the catalogue gestures (design 2026-08-13) key on it.
     #[serde(default)]
     pub provider: String,
+    #[serde(default)]
+    pub auth: ProfileAuth,
     pub mode: String,
     #[serde(default)]
     pub slots: BTreeMap<String, serde_json::Value>,
@@ -178,6 +193,7 @@ mod tests {
                 "kimi-sub": {
                     "provider": "kimi",
                     "mode": "passthrough",
+                    "auth": { "type": "bearer", "apiKeyRef": "SECRET_REF" },
                     "slots": { "opus": "k2.5", "sonnet": { "profile": "other" } },
                     "lastDoctor": { "score": 9, "max": 10, "date": "2026-07-29" }
                 }
@@ -188,6 +204,7 @@ mod tests {
         assert_eq!(c.port, 3456);
         let p = c.profiles.get("kimi-sub").expect("profile");
         assert_eq!(p.mode, "passthrough");
+        assert!(p.auth.is_api_key());
         assert_eq!(p.last_doctor.as_ref().map(|d| d.score), Some(9));
         // Unknown fields (provider, baseUrl) are ignored on purpose.
         assert_eq!(slot_label(p.slots.get("opus").unwrap()), "k2.5");

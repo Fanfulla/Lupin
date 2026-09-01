@@ -48,6 +48,14 @@ export class OAuthError extends Error {
   }
 }
 
+function entitlementError(def: OAuthProviderDef, code: string | undefined): OAuthError | undefined {
+  if (code === undefined || def.entitlementErrors?.includes(code) !== true) return undefined;
+  return new OAuthError(
+    'entitlement_denied',
+    def.entitlementMessage ?? `OAuth account is not entitled to provider access (${code})`,
+  );
+}
+
 export interface DeviceAuthorization {
   deviceCode: string;
   userCode: string;
@@ -129,7 +137,10 @@ export async function startDeviceAuthorization(
 ): Promise<DeviceAuthorization> {
   const r = await postOAuthForm(
     def.host + def.flow.deviceAuthorizationPath,
-    { client_id: def.clientId },
+    {
+      client_id: def.clientId,
+      ...(def.flow.scope !== undefined ? { scope: def.flow.scope } : {}),
+    },
     fetchImpl,
     { kimiDeviceHeaders: def.flow.deviceIdentityHeaders === true },
   );
@@ -146,7 +157,10 @@ export async function startDeviceAuthorization(
     verificationUri,
     ...(typeof complete === 'string' ? { verificationUriComplete: complete } : {}),
     expiresInSec: typeof r['expires_in'] === 'number' ? r['expires_in'] : 900,
-    intervalSec: typeof r['interval'] === 'number' ? r['interval'] : def.flow.pollIntervalMs / 1000,
+    intervalSec:
+      typeof r['interval'] === 'number' && r['interval'] > 0
+        ? r['interval']
+        : Math.max(1, def.flow.pollIntervalMs / 1000),
   };
 }
 
@@ -193,6 +207,8 @@ export async function pollDeviceToken(
       throw e;
     }
     if (r.access_token !== undefined) return tokensFromResponse(r);
+    const denied = entitlementError(def, r.error);
+    if (denied !== undefined) throw denied;
     switch (r.error) {
       case 'authorization_pending':
         opts.onPending?.();
@@ -233,6 +249,8 @@ export async function refreshOAuthTokens(
     kimiDeviceHeaders: def.flow.kind === 'device' && def.flow.deviceIdentityHeaders === true,
   });
   if (r.access_token === undefined) {
+    const denied = entitlementError(def, r.error);
+    if (denied !== undefined) throw denied;
     throw new OAuthError(r.error ?? 'invalid_grant', r.error_description ?? 'refresh rejected');
   }
   const next = tokensFromResponse(r);

@@ -107,6 +107,40 @@ describe('default profiles (SPEC-PROVIDERS §3bis)', () => {
     expect(mergeProfile(kimi).profiles['kimi']?.contextWindows).toEqual(kimi.contextWindows);
   });
 
+  it('the xAI API-key default builds a translate profile without inventing a context window', () => {
+    const grok = DEFAULT_PROFILES.find((profile) => profile.id === 'grok');
+    if (grok === undefined) throw new Error('grok default missing');
+    const config = mergeProfile(grok);
+    expect(config.profiles.grok).toMatchObject({
+      provider: 'xai',
+      mode: 'translate',
+      auth: { type: 'bearer', apiKeyRef: 'XAI_API_KEY' },
+      slots: { opus: 'grok-4.6', sonnet: 'grok-4.6', haiku: 'grok-4.6' },
+    });
+    expect(config.profiles.grok?.contextWindows).toBeUndefined();
+    expect(PROVIDERS.xai).toMatchObject({
+      baseUrl: 'https://api.x.ai/v1',
+      translateBaseUrl: 'https://api.x.ai/v1',
+      modes: ['translate', 'responses'],
+      catalogApi: {
+        url: 'https://api.x.ai/v1/language-models',
+        auth: true,
+        arrayField: 'models',
+      },
+    });
+  });
+
+  it('the xAI OAuth default is a separate Responses profile with no key prompt', () => {
+    const subscription = DEFAULT_PROFILES.find((profile) => profile.id === 'grok-sub');
+    expect(subscription).toMatchObject({
+      provider: 'xai',
+      mode: 'responses',
+      auth: 'none',
+      oauthOnly: true,
+      slots: { opus: 'grok-4.6', sonnet: 'grok-4.6', haiku: 'grok-4.6' },
+    });
+  });
+
   it('mergeProfile is idempotent and preserves other profiles', () => {
     const first = DEFAULT_PROFILES[0];
     const second = DEFAULT_PROFILES[1];

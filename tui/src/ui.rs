@@ -10,7 +10,7 @@
 use crate::api::{self, AuthKind, Snapshot};
 use crate::config::slot_label;
 use crate::job::{Job, PALETTE};
-use crate::{AddProviderMode, ModelPickTarget};
+use crate::{AddProviderMode, CredentialMode, ModelPickTarget};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -215,6 +215,7 @@ pub fn render(
     agents: Option<&AgentsEdit>,
     slots: Option<&SlotsEdit>,
     quick: Option<&crate::QuickModel>,
+    credential: Option<&CredentialMode>,
     add_provider: Option<&AddProviderMode>,
 ) {
     // The portrait is worth 15 rows only where 15 rows are spare. Below that the
@@ -251,7 +252,7 @@ pub fn render(
 
     render_recent(f, snap, chunks[2]);
     render_message(f, message, chunks[3]);
-    render_keys(f, chunks[4], add_provider);
+    render_keys(f, chunks[4], add_provider, credential);
 
     // Overlays last: they sit ON the dashboard, which keeps refreshing under
     // them, so a two-minute doctor never freezes the screen it runs from.
@@ -270,9 +271,54 @@ pub fn render(
     if let Some(q) = quick {
         render_quick_model(f, q, f.area());
     }
+    if let Some(mode) = credential {
+        render_credential(f, mode, f.area());
+    }
     if let Some(mode) = add_provider {
         render_add_provider(f, mode, f.area(), &snap.profile_names);
     }
+}
+
+fn render_credential(f: &mut Frame, mode: &CredentialMode, area: Rect) {
+    let area = centred(area, 66, 45);
+    let profile = match mode {
+        CredentialMode::Input { profile, .. }
+        | CredentialMode::SaveAnywayConfirm { profile, .. } => profile,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(
+            format!(" replace API key for {profile} "),
+            bold(),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let lines = match mode {
+        CredentialMode::Input { value, .. } => {
+            let marker = if value.is_empty() { "" } else { "********" };
+            vec![
+                Line::from(format!(" API key: {marker}")),
+                Line::from(""),
+                Line::from(" The old key stays active until verification succeeds."),
+                Line::from(Span::styled(
+                    " type or paste key   backspace edit   enter verify   esc cancel",
+                    dim(),
+                )),
+            ]
+        }
+        CredentialMode::SaveAnywayConfirm { message, .. } => vec![
+            Line::from(Span::styled(message, Style::default().fg(Color::Red))),
+            Line::from(""),
+            Line::from(" Verification failed; the old key stays active by default."),
+            Line::from(Span::styled(
+                " y save anyway   enter/n/esc keep old key",
+                dim(),
+            )),
+        ],
+    };
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 /// The quick-model overlay (design 2026-08-13): pick one id, then choose the
@@ -1258,18 +1304,31 @@ fn render_message(f: &mut Frame, message: &str, area: Rect) {
     );
 }
 
-fn render_keys(f: &mut Frame, area: Rect, add_provider: Option<&AddProviderMode>) {
-    let text = if add_provider.is_some_and(|mode| {
-        matches!(
-            mode,
-            AddProviderMode::KeyInput { .. }
-                | AddProviderMode::OAuthAccount { .. }
-                | AddProviderMode::LogoutAccount { .. }
-        )
-    }) {
+fn render_keys(
+    f: &mut Frame,
+    area: Rect,
+    add_provider: Option<&AddProviderMode>,
+    credential: Option<&CredentialMode>,
+) {
+    let text = if matches!(credential, Some(CredentialMode::Input { .. })) {
+        "  text input active   q types normally   ctrl-c quit"
+    } else if matches!(
+        credential,
+        Some(CredentialMode::SaveAnywayConfirm { .. })
+    ) {
+        "  confirmation active   y save anyway   enter/n/esc keep old key   ctrl-c quit"
+    } else if add_provider.is_some_and(|mode| {
+            matches!(
+                mode,
+                AddProviderMode::KeyInput { .. }
+                    | AddProviderMode::OAuthAccount { .. }
+                    | AddProviderMode::LogoutAccount { .. }
+            )
+        })
+    {
         "  text input active   q types normally   ctrl-c quit"
     } else {
-        "  q quit   1-9/arrows+enter switch   d doctor   t try model   m models   : commands   o order   a agents   p add provider   r refresh"
+        "  q quit   1-9/arrows+enter switch   d doctor   t try model   m models   c key   : commands   o order   a agents   p add provider   r refresh"
     };
     f.render_widget(Paragraph::new(Line::from(Span::styled(text, dim()))), area);
 }
@@ -1279,7 +1338,7 @@ mod tests {
     use super::*;
     use crate::api::{AuthKind, Health, ProviderRow, Snapshot, Tier};
     use crate::config::LupinConfig;
-    use crate::AddProviderMode;
+    use crate::{AddProviderMode, CredentialMode};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::collections::BTreeMap;
@@ -1297,7 +1356,7 @@ mod tests {
 
     fn screen_sel(snap: &Snapshot, message: &str, selected: usize) -> String {
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, snap, message, selected, None, false, None, None, None, None))
+        term.draw(|f| render(f, snap, message, selected, None, false, None, None, None, None, None))
             .expect("draw");
         term.backend()
             .buffer()
@@ -1327,7 +1386,7 @@ mod tests {
             profile_names: Vec::new(),
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, None, Some(mode)))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, None, None, Some(mode)))
             .expect("draw");
         term.backend()
             .buffer()
@@ -1335,6 +1394,77 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect::<String>()
+    }
+
+    fn credential_screen(mode: &CredentialMode) -> String {
+        let snap = Snapshot {
+            config: None,
+            health: None,
+            recent: Vec::new(),
+            profile_names: Vec::new(),
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+        term.draw(|f| {
+            render(
+                f,
+                &snap,
+                "ready",
+                0,
+                None,
+                false,
+                None,
+                None,
+                None,
+                Some(mode),
+                None,
+            )
+        })
+        .expect("draw");
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn credential_input_masks_the_key_and_states_the_preservation_rule() {
+        let out = credential_screen(&CredentialMode::Input {
+            profile: "main".to_string(),
+            value: "replacement-fake-key".to_string(),
+        });
+        assert!(out.contains("replace API key for main"), "{out}");
+        assert!(out.contains("********"), "{out}");
+        assert!(!out.contains("replacement-fake-key"), "{out}");
+        assert!(out.contains("old key stays active"), "{out}");
+        assert!(out.contains("ctrl-c quit"), "{out}");
+    }
+
+    #[test]
+    fn credential_save_anyway_is_visibly_not_the_default() {
+        let out = credential_screen(&CredentialMode::SaveAnywayConfirm {
+            profile: "main".to_string(),
+            key: "replacement-fake-key".to_string(),
+            message: "provider unavailable".to_string(),
+        });
+        assert!(out.contains("provider unavailable"), "{out}");
+        assert!(out.contains("old key stays active"), "{out}");
+        assert!(out.contains("y save anyway"), "{out}");
+        assert!(out.contains("confirmation active"), "{out}");
+        assert!(out.contains("ctrl-c quit"), "{out}");
+        assert!(!out.contains("replacement-fake-key"), "{out}");
+    }
+
+    #[test]
+    fn dashboard_footer_documents_the_change_key_gesture() {
+        let snap = Snapshot {
+            config: Some(config()),
+            health: None,
+            recent: Vec::new(),
+            profile_names: vec!["kimi-sub".to_string()],
+        };
+        assert!(screen(&snap).contains("c key"));
     }
 
     #[test]
@@ -1360,7 +1490,7 @@ mod tests {
             cursor: 0,
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, None, Some(&mode)))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, None, None, Some(&mode)))
             .expect("draw");
         let out = term
             .backend()
@@ -1397,7 +1527,7 @@ mod tests {
             catalog: None,
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, Some(&edit), None, None))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, Some(&edit), None, None, None))
             .expect("draw");
         let out = term
             .backend()
@@ -1515,7 +1645,7 @@ mod tests {
             touched: Vec::new(),
         };
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, Some(&edit), None, None, None))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, Some(&edit), None, None, None, None))
             .expect("draw");
         let out = term
             .backend()
@@ -1618,7 +1748,7 @@ mod tests {
             profile_names: vec!["kimi-sub".to_string()],
         };
         let mut term = Terminal::new(TestBackend::new(20, 4)).expect("terminal");
-        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, None, None))
+        term.draw(|f| render(f, &snap, "ready", 0, None, false, None, None, None, None, None))
             .expect("draw on a cramped screen");
     }
 
@@ -1707,7 +1837,7 @@ mod tests {
     /// the cursor highlight, drawn on the selected row.
     fn any_reversed(snap: &Snapshot, selected: usize) -> bool {
         let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        term.draw(|f| render(f, snap, "ready", selected, None, false, None, None, None, None))
+        term.draw(|f| render(f, snap, "ready", selected, None, false, None, None, None, None, None))
             .expect("draw");
         term.backend()
             .buffer()
@@ -1778,7 +1908,7 @@ mod tests {
         // The reversed cell's vertical position changes with `selected`.
         let y_of = |selected: usize| {
             let mut term = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-            term.draw(|f| render(f, &snap, "ready", selected, None, false, None, None, None, None))
+            term.draw(|f| render(f, &snap, "ready", selected, None, false, None, None, None, None, None))
                 .expect("draw");
             let buf = term.backend().buffer();
             let width = buf.area().width as usize;
