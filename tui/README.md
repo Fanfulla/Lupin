@@ -58,9 +58,14 @@ asks for the main and light picks before anything is saved.
 
 Dashboard keys: `q` / `Esc` / `Ctrl-C` quit, `1`-`9` switch profiles,
 `↑`/`↓` or `j`/`k` move the cursor, `Enter` selects, `r` refreshes, `d` runs
-the doctor, `:` opens the command palette, `o` edits failover order, and `a`
+the doctor, `c` replaces the highlighted API key without rebuilding its
+profile, `:` opens the command palette, `o` edits failover order, and `a`
 opens agent routing. During masked key entry, `q` is ordinary input and
 `Ctrl-C` remains the global exit.
+
+Key replacement verifies before storage and leaves the old credential active
+on failure. Saving an unverified replacement requires an explicit `y`; the
+daemon remains the only credential writer, and the TUI never sees the old key.
 
 The dashboard refreshes every second; a `lupin use` from another terminal
 shows up within a second too. Full guide: [docs/TUI.md](../docs/TUI.md).

@@ -7,6 +7,41 @@ All notable changes to this project are documented here. The format follows
 Entries record what a user can observe. The full engineering record, with the
 evidence behind each claim, lives in `docs/ROADMAP.md` and `docs/DECISIONS.md`.
 
+## [0.4.0] - 2026-09-01
+
+### Added
+
+- **Replace an API key from the TUI with `c`** on the highlighted profile.
+  Input stays masked, the old key remains active until verification succeeds,
+  and saving an unverified replacement requires an explicit second choice.
+  Rotation changes only the shared credential reference, never slots, routes,
+  failover, quirks, or doctor history.
+- **Grok through xAI API keys** on the documented OpenAI-compatible endpoint,
+  with an authenticated language-model catalogue in every model input.
+- **Experimental Grok subscription OAuth** through an RFC 8628 device login,
+  following the public Grok CLI flow reviewed in Hermes Agent and the official
+  xAI source. Tokens are verified before storage, refreshed with rotation, and
+  can only be sent to HTTPS xAI hosts. Account entitlement may still be
+  refused; the API-key profile is the supported fallback.
+- **A user-facing glossary** for provider, profile, slots, lanes, routing,
+  credentials, health, doctor results, and cache receipts.
+
+### Changed
+
+- The Rust dashboard reuses its health, control, and verification HTTP clients
+  instead of rebuilding them on every refresh or action.
+- The README command table now mirrors the executable command surface and no
+  longer advertises the setup verbs removed in 0.3.0.
+
+### Security
+
+- Updated `hono` and `undici` to patched runtime versions; the production npm
+  audit reports no known vulnerability.
+- Provider connectivity errors redact both known token formats and the exact
+  submitted replacement before crossing the control API.
+- Repository-local environment, credential, debug, process, and runtime state
+  files are ignored explicitly so `git add -A` cannot publish them.
+
 ## [0.3.2] - 2026-08-13
 
 ### Added

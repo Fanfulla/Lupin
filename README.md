@@ -29,7 +29,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Node >= 20](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)
 ![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178c6)
-![tests](https://img.shields.io/badge/tests-828%20node%20%2B%20124%20rust-success)
+![tests](https://img.shields.io/badge/tests-863%20node%20%2B%20135%20rust-success)
 
 </div>
 
@@ -262,6 +262,8 @@ Four lanes, picked by Lupin, never by you. **Passthrough first**: when a provide
 | ChatGPT subscription | `responses` | Sign in with ChatGPT (PKCE) | verified live, doctor 10/10 |
 | Gemini Code Assist subscription | `codeassist` | Sign in with Google (PKCE) | verified live, doctor 8/10 |
 | GitHub Copilot subscription | translate | GitHub device flow | verified live 2026-08-05. On the free plan expect about 50 chat requests a month, which one real session can spend |
+| Grok / xAI API | translate | API key | official OpenAI-compatible endpoint, source-verified, not scored |
+| Grok subscription | `responses` | experimental xAI device OAuth | source-verified against Hermes and official xAI code; entitlement may return 403, not scored |
 | DeepSeek, Z.AI / GLM | passthrough | API key | implemented, not scored |
 | OpenRouter | passthrough or translate | API key | 344 models, 255 with tool calling |
 | OpenAI, Gemini (pay per token) | translate | API key | implemented, not scored |
@@ -337,6 +339,7 @@ whole profile in one gesture, single slots excludable), **`m` aims its slots**
 (opus, sonnet and haiku edited in place, written as given and never checked;
 with a catalogue the focused field suggests while you type and `Tab`
 completes), **`:` opens the command palette**, `o` edits the failover order,
+**`c` replaces the highlighted API key without resetting its profile**,
 **`a` opens agents mode**, `r` refreshes now, `q` quits.
 
 Providers that publish a model list (OpenRouter first) feed those inputs live:
@@ -385,12 +388,18 @@ also makes sure the daemon is running, so the dashboard never starts dead. The
 palette runs `doctor`, `usage`, `list`, `status` and `stop`. Its only
 shell-only row is `run`, because Claude Code needs to own the terminal.
 
+Pressing `c` on a key-backed profile opens masked replacement input. The daemon
+verifies the new key against that profile before storing it; a failure leaves
+the old key active, and save-anyway needs an explicit `y`. Credential rotation
+does not recreate the profile, so model slots, routes, failover, quirks and the
+last doctor result stay unchanged.
+
 Give it 32 rows or more and it draws the portrait full size; below that it keeps
 every fact and shrinks the art. It needs a real terminal: it takes over the
 screen, so it will not do anything useful inside another tool's output pane.
 
 ```
-⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.3.2   the gentleman router
+⣀⣤⣶⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀  L U P I N  v0.4.0   the gentleman router
 ⠈⢿⣿⣿⣿⣿⣿⣷⣖⠀⠀⠀⠀⠀⠀⠀  daemon up   127.0.0.1:3456
 ⠀⠴⢿⣿⣿⣿⣿⣿⣿⣀⠀⠀⠀⠀⠀⠀  active: kimi-sub  ->  k3
 ⠀⠀⠈⠛⢿⠿⣿⣿⣿⣿⣿⣶⣶⣶⣤⣄
@@ -444,6 +453,19 @@ Yes, with a caveat worth reading. The Google OAuth row in the hub reaches Google
 </details>
 
 <details>
+<summary><b>Can I use Grok with an API key or my subscription?</b></summary>
+
+Both paths appear in the hub. The `grok` row uses `XAI_API_KEY` on xAI's
+documented pay-per-token API. The `grok-sub` row uses an experimental device
+OAuth flow reviewed against Hermes Agent and xAI's public CLI source. OAuth
+access is not documented as a supported third-party developer API, so an
+active subscription may still receive an entitlement 403; re-logging in does
+not change that account decision, and the API-key row is the reliable
+fallback. No compatibility score is claimed until a real doctor run earns it.
+
+</details>
+
+<details>
 <summary><b>Does my claude-mem / MCP / skills setup keep working?</b></summary>
 
 Everything local does: native tools, local and project MCP servers, plugins, skills, hooks, `CLAUDE.md`, memory, subagents. Verified with real sessions. What breaks is tied to the claude.ai account, and it breaks with **any** proxy, not just this one: see the section below.
@@ -475,7 +497,7 @@ One cosmetic quirk to expect: resuming a session may print `Session model k3 cou
 
 ## Local models, zero keys
 
-Pick `ollama`, `lmstudio`, `llamacpp` or `ds4` in the wizard: no key to paste, the models are read from your own server **with their real context windows**, and you get a warning about the ones that do not declare tool support, since Claude Code cannot take a single step without them.
+Pick `ollama`, `lmstudio`, `llamacpp` or `ds4` in the hub: no key to paste, the models are read from your own server **with their real context windows**, and you get a warning about the ones that do not declare tool support, since Claude Code cannot take a single step without them.
 
 That distinction is not pedantry. `gemma-4-12b` declares a 262,144 token window and runs with 8,192: a factor of 32. Lupin always prefers the **loaded** window over the declared maximum, and marks which one it got.
 
@@ -487,19 +509,27 @@ That distinction is not pedantry. `gemma-4-12b` declares a 262,144 token window 
 | Command | Does |
 |---|---|
 | `lupin` | the hub: TUI when the sidecar is installed, else status and next steps |
-| `init` | wizard: provider, key (never echoed), a real connectivity test |
-| `login <provider>` / `logout` | OAuth, with `--account <label>` for a second account on the same provider |
-| `use <profile> [--bg <p>]` | hot switch, no restart: the open session moves on its next request |
+| `lupin help` / `--help` | print the complete command summary |
+| `lupin version` / `--version` | print the package version only |
+| `use <profile> [--bg <p>\|none] [--opus <m>] [--sonnet <m>] [--haiku <m>]` | hot switch and optionally aim slots, no restart |
 | `go [profile] -- <cmd>` | switch and run in one step |
 | `run -- <cmd>` | start the daemon if needed and run with the env pointed at Lupin |
-| `resume [profile]` | continue this directory's last session on another provider |
-| `doctor [profile]` | the real headless session, scored on disk artefacts |
-| `use <profile> --opus <model>` | aim a slot by hand, for profiles whose models come from the account |
-| `agents set <name> --profile <p> [--wire]` | per-subagent routes; `--wire` writes the agent file's `model:` line for you |
+| `resume [profile] [-- <args>]` | continue this directory's last session on another provider |
+| `doctor [profile] [--json] [--submit]` | run the real headless session and score disk artefacts |
+| `agents` | list per-agent routes and the ids that activate them |
+| `agents set <name> (--profile <p> \| --model <m>) [--wire]` | aim one agent route; `--wire` updates its frontmatter explicitly |
+| `agents unset <name> [--wire]` | remove one agent route and optionally restore `model: inherit` |
 | `update` | update the npm package and rebuild the TUI sidecar if you have one |
-| `list` / `status` / `stop` / `logs -f` | the plain truths |
+| `list` / `ls` | list profiles, slots and doctor scores |
+| `status` / `st` | show daemon and active-profile status |
+| `stop` | stop the daemon and watchdog safely |
+| `logs [-f]` | show or follow structured request logs |
 | `top` | live console, no sidecar needed |
-| `usage [--days N]` | tokens really served, aggregated from your local log |
+| `usage [--days N] [--json]` | tokens really served, aggregated from your local log |
+
+Provider setup, OAuth login/logout and API-key replacement are hub actions,
+not standalone setup commands. Run bare `lupin`; use `p` to manage providers
+and `c` to replace the selected API key.
 
 Every command behaves identically on Windows PowerShell, cmd, and any POSIX shell. `lupin run` spawns Claude Code with no shell in between, so your arguments arrive byte for byte (ADR-29).
 
@@ -520,6 +550,7 @@ Every command behaves identically on Windows PowerShell, cmd, and any POSIX shel
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Repo layout, dependency rules (a pure core) |
 | [docs/TESTING.md](docs/TESTING.md) | Fixtures from real output, test levels |
 | [docs/TUI.md](docs/TUI.md) | The terminal hub: install, keys, panels, troubleshooting |
+| [docs/GLOSSARY.md](docs/GLOSSARY.md) | User-facing definitions for profiles, slots, lanes, routing and credentials |
 | [docs/COMPETITIVE.md](docs/COMPETITIVE.md) | Competitive analysis: white space, steal candidates |
 | [docs/DESIGN-OAUTH.md](docs/DESIGN-OAUTH.md) | Pluggable credential source, device flow |
 | [docs/DESIGN-OAUTH-PKCE-TUI.md](docs/DESIGN-OAUTH-PKCE-TUI.md) | OAuth PKCE, the control API, the Rust sidecar |
