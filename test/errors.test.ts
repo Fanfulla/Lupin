@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { networkError, normalizeProviderError, parseRetryAfterMs, proxyError } from '../src/core/errors.js';
+import { networkError, normalizeProviderError, parseRetryAfterMs, proxyError, scrubSecrets } from '../src/core/errors.js';
 
 const capture = JSON.parse(
   readFileSync(new URL('./helpers/captures/lmstudio-context-overflow.json', import.meta.url), 'utf8'),
@@ -46,11 +46,24 @@ describe('normalizeProviderError (SPEC-TRANSLATION §6)', () => {
 });
 
 describe('credential scrubbing (ROADMAP backlog #4, da CCProxy)', () => {
+  it('scrubs the exact submitted secret even when it matches no known key prefix', () => {
+    expect(scrubSecrets('provider echoed unusual.secret/value', ['unusual.secret/value'])).toBe(
+      'provider echoed [redacted]',
+    );
+  });
+
   it('scrubs Bearer tokens and sk- keys from provider messages', () => {
     const raw = JSON.stringify({ error: { message: 'auth failed: Bearer sk-ant-abc123DEF456ghi789jkl rejected' } });
     const msg = normalizeProviderError(401, raw).body.error.message;
     expect(msg).not.toContain('sk-ant-abc123DEF456ghi789jkl');
     expect(msg).toContain('[redacted]');
+  });
+
+  it('scrubs xAI API keys from ordinary provider errors', () => {
+    const key = `xai-${'a'.repeat(48)}`;
+    expect(normalizeProviderError(401, `credential ${key} rejected`).body.error.message).toBe(
+      'credential [redacted] rejected',
+    );
   });
 
   it('scrubs JWTs, Google-style keys and emails', () => {

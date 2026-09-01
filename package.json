@@ -1,6 +1,6 @@
 {
   "name": "lupin-code",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Local proxy: use Claude Code (MCP, skills, hooks, plugins) with any LLM provider",
   "keywords": [
     "claude-code",
@@ -76,9 +76,9 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.0.10",
-    "hono": "^4.12.30",
+    "hono": "^4.12.34",
     "js-tiktoken": "^1.0.21",
-    "undici": "^7.28.0"
+    "undici": "^7.29.0"
   },
   "optionalDependencies": {
     "@napi-rs/keyring": "^1.3.0"
