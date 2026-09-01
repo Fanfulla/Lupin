@@ -133,6 +133,28 @@ export const DEFAULT_PROFILES: DefaultProfileDef[] = [
     verified: '2026-08-12 (slugs re-verified live against GET /api/v1/models, all with tools plus tool_choice)',
   },
   {
+    id: 'grok',
+    provider: 'xai',
+    mode: 'translate',
+    description: 'Grok (xAI API key, pay-per-token): OpenAI-compatible translate',
+    apiKeyEnv: 'XAI_API_KEY',
+    auth: 'bearer',
+    // One documented stable alias on every slot. xAI publishes the context as
+    // "500k" without a factor, so no contextWindows number is invented.
+    slots: { opus: 'grok-4.6', sonnet: 'grok-4.6', haiku: 'grok-4.6' },
+    verified: '2026-09-01 (official xAI docs; source-verified, no live request)',
+  },
+  {
+    id: 'grok-sub',
+    provider: 'xai',
+    mode: 'responses',
+    description: 'Grok subscription OAuth (experimental): device login, no API key',
+    auth: 'none',
+    oauthOnly: true,
+    slots: { opus: 'grok-4.6', sonnet: 'grok-4.6', haiku: 'grok-4.6' },
+    verified: '2026-09-01 (Hermes + official xAI source; no live Lupin request or doctor score)',
+  },
+  {
     id: 'gpt',
     provider: 'openai',
     mode: 'translate',

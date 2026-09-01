@@ -18,7 +18,11 @@ import { lastEditFailed, withEditRetryHint, withIdentityHint } from '../core/qui
 import { observeCacheUsage } from './cache-watch.js';
 import type { AnthropicRequest } from '../core/request.js';
 import type { OAuthProviderDef } from '../providers/oauth.js';
-import { resolveCredential, type ResolvedCredential } from './credential.js';
+import {
+  credentialDestinationAllowed,
+  resolveCredential,
+  type ResolvedCredential,
+} from './credential.js';
 import { PROVIDER_TIMEOUT_MS } from './dispatcher.js';
 import { createHealthTracker, type HealthTracker } from './health.js';
 import { registerControlRoutes, type ControlDeps } from './control.js';
@@ -400,13 +404,19 @@ export function createApp(config: LupinConfig, opts: AppOptions = {}): Hono {
 
       // The credential may name its own host (§3quater: a token bought at
       // exchange time says where it is spent). The user's explicit override
-      // still wins; the registry default is the last word.
+      // still has precedence, subject to the credential's destination pin;
+      // the registry default is the last word.
       const baseUrl =
         profile.baseUrl ??
         credential.baseUrl ??
         (profile.mode === 'translate' ? (def?.translateBaseUrl ?? def?.baseUrl) : def?.baseUrl);
       if (baseUrl === undefined) {
         return fail(proxyError(`profile "${profileName}": unknown provider "${profile.provider}" and no baseUrl override`));
+      }
+      if (!credentialDestinationAllowed(baseUrl, credential.allowedHosts)) {
+        return fail(
+          authError('[lupin] refusing to send OAuth credential outside its pinned HTTPS provider origin'),
+        );
       }
 
       // M6a lane: the OpenAI Responses API over WHAM (OAuth subscription).

@@ -8,6 +8,29 @@ use crate::logtail::{self, LogLine};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+type SharedClient = OnceLock<Result<reqwest::blocking::Client, String>>;
+
+static HEALTH_CLIENT: SharedClient = OnceLock::new();
+static CONTROL_CLIENT: SharedClient = OnceLock::new();
+static LONG_CONTROL_CLIENT: SharedClient = OnceLock::new();
+
+fn shared_client(
+    slot: &'static SharedClient,
+    timeout: Duration,
+) -> Result<&'static reqwest::blocking::Client, String> {
+    match slot.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|e| e.to_string())
+    }) {
+        Ok(client) => Ok(client),
+        Err(error) => Err(error.clone()),
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Health {
@@ -147,10 +170,7 @@ pub fn snapshot(cfg_path: &Path, bootstrap_identity: Option<&BootstrapIdentity>)
 
 fn fetch_health(port: u16) -> Option<Health> {
     let url = format!("http://127.0.0.1:{port}/health");
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(800))
-        .build()
-        .ok()?;
+    let client = shared_client(&HEALTH_CLIENT, Duration::from_millis(800)).ok()?;
     let res = client.get(&url).send().ok()?;
     // The status is the whole answer here. When the daemon dies, the watchdog
     // re-binds the port and serves a 529 to EVERY path, which is its job (a
@@ -241,6 +261,17 @@ pub struct SetupKeyError {
     pub can_save_anyway: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaceKeyResult {
+    pub shared_profiles: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaceKeyError {
+    pub message: String,
+    pub can_save_anyway: bool,
+}
+
 pub fn setup_key(
     identity: &BootstrapIdentity,
     provider_id: &str,
@@ -274,6 +305,41 @@ pub fn setup_key(
     let status = res.status().as_u16();
     let body = res.text().unwrap_or_default();
     parse_setup_key(status, &body)
+}
+
+pub fn replace_key(
+    identity: &BootstrapIdentity,
+    profile: &str,
+    key: &str,
+    save_anyway: bool,
+) -> Result<ReplaceKeyResult, ReplaceKeyError> {
+    let url = format!(
+        "http://127.0.0.1:{}/v1/lupin/credentials/key",
+        identity.port
+    );
+    let mut body = serde_json::json!({ "profile": profile, "key": key });
+    if save_anyway {
+        body["saveAnyway"] = serde_json::json!(true);
+    }
+    let client = setup_key_client().map_err(|message| ReplaceKeyError {
+        message,
+        can_save_anyway: false,
+    })?;
+    let res = client
+        .post(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", identity.local_token),
+        )
+        .json(&body)
+        .send()
+        .map_err(|_| ReplaceKeyError {
+            message: daemon_not_answering(),
+            can_save_anyway: false,
+        })?;
+    let status = res.status().as_u16();
+    let body = res.text().unwrap_or_default();
+    parse_replace_key(status, &body)
 }
 
 /// A rejected `discover-local`/`setup-local`: both share the same envelope, an
@@ -455,20 +521,14 @@ pub fn set_failover(identity: &BootstrapIdentity, profile: &str, failover: &str)
     parse_logout(status, &body)
 }
 
-fn control_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(1500))
-        .build()
-        .map_err(|e| e.to_string())
+fn control_client() -> Result<&'static reqwest::blocking::Client, String> {
+    shared_client(&CONTROL_CLIENT, Duration::from_millis(1500))
 }
 
-fn setup_key_client() -> Result<reqwest::blocking::Client, String> {
+fn setup_key_client() -> Result<&'static reqwest::blocking::Client, String> {
     // Node may spend up to 15 seconds verifying the provider. The caller must
     // wait for that authoritative save-or-reject answer, plus local overhead.
-    reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())
+    shared_client(&LONG_CONTROL_CLIENT, Duration::from_secs(20))
 }
 
 fn daemon_not_answering() -> String {
@@ -553,6 +613,34 @@ fn parse_setup_key(status: u16, body: &str) -> Result<(), SetupKeyError> {
         });
     }
     Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplaceKeyEnvelope {
+    ok: bool,
+    #[serde(default)]
+    shared_profiles: Vec<String>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    can_save_anyway: bool,
+}
+
+fn parse_replace_key(status: u16, body: &str) -> Result<ReplaceKeyResult, ReplaceKeyError> {
+    let parsed: ReplaceKeyEnvelope = serde_json::from_str(body).map_err(|_| ReplaceKeyError {
+        message: http_error(status),
+        can_save_anyway: false,
+    })?;
+    if !(200..300).contains(&status) || !parsed.ok {
+        return Err(ReplaceKeyError {
+            message: parsed.error.unwrap_or_else(|| http_error(status)),
+            can_save_anyway: parsed.can_save_anyway,
+        });
+    }
+    Ok(ReplaceKeyResult {
+        shared_profiles: parsed.shared_profiles,
+    })
 }
 
 #[derive(Deserialize)]
@@ -812,10 +900,7 @@ pub fn switch_profile(snap: &Snapshot, name: &str) -> Result<(), String> {
     };
     let url = format!("http://127.0.0.1:{}/v1/lupin/use", config.port);
     let body = serde_json::json!({ "profile": name });
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(1500))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = control_client()?;
     let res = client
         .post(&url)
         .header("authorization", format!("Bearer {}", config.local_token))
@@ -833,9 +918,9 @@ pub fn switch_profile(snap: &Snapshot, name: &str) -> Result<(), String> {
 mod tests {
     use super::{
         discover_local, logout, parse_discover_catalog, parse_discover_local, parse_login_poll,
-        parse_login_start, parse_providers, parse_setup_key, parse_setup_local, set_failover,
-        setup_key, setup_local, slots_body, start_login, AuthKind, Health, LoginStatus,
-        SetupKeyOptions, SetupLocalRequest,
+        parse_login_start, parse_providers, parse_replace_key, parse_setup_key, parse_setup_local,
+        replace_key, set_failover, setup_key, setup_local, slots_body, start_login, AuthKind, Health,
+        LoginStatus, SetupKeyOptions, SetupLocalRequest,
     };
     use crate::config::BootstrapIdentity;
     use std::io::{Read, Write};
@@ -1071,6 +1156,52 @@ mod tests {
         let not_offered = parse_setup_key(404, r#"{"ok":false,"error":"unknown provider"}"#)
             .expect_err("rejected");
         assert!(!not_offered.can_save_anyway);
+    }
+
+    #[test]
+    fn replace_key_parses_shared_profiles_and_the_save_anyway_offer() {
+        let replaced = parse_replace_key(
+            200,
+            r#"{"ok":true,"profile":"main","sharedProfiles":["main","backup"]}"#,
+        )
+        .expect("replacement outcome");
+        assert_eq!(replaced.shared_profiles, ["main", "backup"]);
+
+        let offered = parse_replace_key(
+            400,
+            r#"{"ok":false,"error":"provider unavailable","canSaveAnyway":true}"#,
+        )
+        .expect_err("verification failed");
+        assert_eq!(offered.message, "provider unavailable");
+        assert!(offered.can_save_anyway);
+
+        let ordinary = parse_replace_key(409, r#"{"ok":false,"error":"environment wins"}"#)
+            .expect_err("store write refused");
+        assert!(!ordinary.can_save_anyway);
+    }
+
+    #[test]
+    fn replace_key_sends_only_the_explicit_optional_flag() {
+        let (identity, handle) = capture_request(&http_ok(
+            r#"{"ok":true,"profile":"main","sharedProfiles":["main"]}"#,
+        ));
+        let result = replace_key(&identity, "main", "replacement-fake-key", true);
+        let request = handle.join().expect("server thread");
+        assert_eq!(result.expect("replacement").shared_profiles, ["main"]);
+        assert!(request.contains("/v1/lupin/credentials/key"), "{request}");
+        assert!(request.contains(r#""profile":"main""#), "{request}");
+        assert!(
+            request.contains(r#""key":"replacement-fake-key""#),
+            "{request}"
+        );
+        assert!(request.contains(r#""saveAnyway":true"#), "{request}");
+
+        let (identity, handle) = capture_request(&http_ok(
+            r#"{"ok":true,"profile":"main","sharedProfiles":["main"]}"#,
+        ));
+        replace_key(&identity, "main", "replacement-fake-key", false).expect("replacement");
+        let request = handle.join().expect("server thread");
+        assert!(!request.contains("saveAnyway"), "{request}");
     }
 
     #[test]

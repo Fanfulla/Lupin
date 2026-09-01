@@ -23,7 +23,8 @@ import {
   type RoutesConfig,
   type SlotName,
 } from '../config/config.js';
-import { deleteOAuthTokens } from '../config/credentials.js';
+import { deleteOAuthTokens, setCredential, setOAuthTokens } from '../config/credentials.js';
+import { scrubSecrets } from '../core/errors.js';
 import { DOCTOR_MIN_CONTEXT, preflightContext } from '../doctor/plan.js';
 import { DEFAULT_PROFILES, type DefaultProfileDef } from '../providers/defaults.js';
 import { fetchCatalog } from '../providers/catalog.js';
@@ -34,8 +35,7 @@ import { PROVIDERS } from '../providers/registry.js';
 import { runPkceLogin, type PkceLoginHooks } from './oauth-pkce.js';
 import { asDeviceFlow } from '../providers/oauth.js';
 import { pollDeviceToken, startDeviceAuthorization } from './oauth.js';
-import { setOAuthTokens } from '../config/credentials.js';
-import { testProviderKey } from './connectivity.js';
+import { testConfiguredProfileKey, testProviderKey } from './connectivity.js';
 
 type JobStatus = 'pending' | 'done' | 'error';
 
@@ -71,6 +71,7 @@ export interface ControlDeps {
   openBrowser: (url: string) => void;
   /** Connectivity seams keep failure-path tests local and deterministic. */
   testProviderKey?: typeof testProviderKey;
+  testConfiguredProfileKey?: typeof testConfiguredProfileKey;
   verifyToken?: typeof verifyToken;
   /** Seam for local-runtime discovery: the probes hit 127.0.0.1 ports otherwise. */
   fetchLocal?: typeof fetch;
@@ -343,6 +344,62 @@ export function registerControlRoutes(app: Hono, bootstrapIdentity: BootstrapIde
       return c.json(result);
     } catch (e) {
       return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  });
+
+  app.post('/v1/lupin/credentials/key', async (c) => {
+    const denied = guard(c);
+    if (denied !== undefined) return denied;
+    let body: { profile?: unknown; key?: unknown; saveAnyway?: unknown };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ ok: false, error: 'expected a JSON body { profile, key }' }, 400);
+    }
+    if (typeof body.profile !== 'string' || body.profile === '' || typeof body.key !== 'string' || body.key === '') {
+      return c.json({ ok: false, error: 'expected a JSON body { profile, key }' }, 400);
+    }
+    if (body.saveAnyway !== undefined && typeof body.saveAnyway !== 'boolean') {
+      return c.json({ ok: false, error: '"saveAnyway" must be a boolean' }, 400);
+    }
+    try {
+      const config = loadConfig();
+      const profile = config.profiles[body.profile];
+      if (profile === undefined) return c.json({ ok: false, error: `unknown profile "${body.profile}"` }, 404);
+      if (profile.auth.type !== 'bearer' && profile.auth.type !== 'x-api-key') {
+        return c.json({ ok: false, error: `profile "${body.profile}" does not use an API key` }, 400);
+      }
+      const ref = profile.auth.apiKeyRef;
+      if (process.env[ref] !== undefined) {
+        return c.json(
+          {
+            ok: false,
+            error: `profile "${body.profile}" reads its API key from environment variable "${ref}": update that variable and restart instead`,
+          },
+          409,
+        );
+      }
+      const verdict = await (deps.testConfiguredProfileKey ?? testConfiguredProfileKey)(
+        body.profile,
+        profile,
+        body.key,
+      );
+      const detail = scrubSecrets(verdict.detail, [body.key]);
+      if (!verdict.ok && body.saveAnyway !== true) {
+        return c.json({ ok: false, error: detail, canSaveAnyway: true }, 400);
+      }
+      setCredential(ref, body.key);
+      const sharedProfiles = Object.entries(config.profiles)
+        .filter(([, candidate]) =>
+          (candidate.auth.type === 'bearer' || candidate.auth.type === 'x-api-key') && candidate.auth.apiKeyRef === ref,
+        )
+        .map(([name]) => name);
+      return c.json({ ok: true, profile: body.profile, sharedProfiles });
+    } catch (e) {
+      return c.json(
+        { ok: false, error: scrubSecrets(e instanceof Error ? e.message : String(e), [body.key]) },
+        500,
+      );
     }
   });
 

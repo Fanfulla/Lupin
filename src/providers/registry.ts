@@ -29,7 +29,13 @@ export interface ProviderDef {
    * (ADR-53). `stripPrefix` cuts a provider's id decoration (Gemini's
    * `models/`) so the served id is what lands in a slot.
    */
-  catalogApi?: { url: string; auth?: true; stripPrefix?: string };
+  catalogApi?: {
+    url: string;
+    auth?: true;
+    stripPrefix?: string;
+    /** JSON property holding the rows. OpenAI-compatible lists default to `data`. */
+    arrayField?: 'data' | 'models';
+  };
   /**
    * Static headers that let the provider dashboard attribute traffic to Lupin
    * (SPEC-PROVIDERS §5bis). Sent on every request: attribution is per-call, not
@@ -109,6 +115,22 @@ export const PROVIDERS: Record<string, ProviderDef> = {
     // assisted model input.
     catalogApi: { url: 'https://openrouter.ai/api/v1/models' },
     verified: '2026-07-18',
+  },
+  xai: {
+    id: 'xai',
+    modes: ['translate', 'responses'],
+    baseUrl: 'https://api.x.ai/v1',
+    translateBaseUrl: 'https://api.x.ai/v1',
+    auth: 'bearer',
+    // The language-only list avoids image/video generation ids from the
+    // broader /v1/models endpoint. Authenticated with the same key as
+    // inference; official xAI REST reference, checked 2026-09-01.
+    catalogApi: {
+      url: 'https://api.x.ai/v1/language-models',
+      auth: true,
+      arrayField: 'models',
+    },
+    verified: '2026-09-01 (official xAI REST reference; no live credential-backed request)',
   },
   openai: {
     id: 'openai',

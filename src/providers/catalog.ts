@@ -112,12 +112,16 @@ export async function fetchCatalog(def: ProviderDef, opts: CatalogOptions = {}):
         : {}),
     });
     if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
-    const body = (await res.json()) as { data?: unknown[] };
+    const body = (await res.json()) as Record<string, unknown>;
+    const arrayField = api.arrayField ?? 'data';
+    const wireRows = body[arrayField];
     // A 200 whose body is not the published shape (a rate-limit envelope, a
     // renamed field) is a FAILURE, or it would be cached as an authoritative
     // empty catalogue for the whole TTL.
-    if (!Array.isArray(body.data)) throw new Error('unexpected response shape (no "data" array)');
-    const rows = body.data as WireRow[];
+    if (!Array.isArray(wireRows)) {
+      throw new Error(`unexpected response shape (no "${arrayField}" array)`);
+    }
+    const rows = wireRows as WireRow[];
     const models = rows
       .map((row) => normalizeRow(row, api.stripPrefix))
       .filter((m): m is CatalogModel => m !== undefined);

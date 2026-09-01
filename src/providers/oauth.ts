@@ -11,6 +11,8 @@ export type OAuthFlow =
       kind: 'device';
       deviceAuthorizationPath: string;
       pollIntervalMs: number;
+      /** Optional RFC 8628 scope, sent only when the provider declares one. */
+      scope?: string;
       /**
        * Send the Kimi `X-Msh-*` device identity headers on this provider's OAuth
        * calls, so its console can name the device (DESIGN-OAUTH §6). Opt-in per
@@ -94,6 +96,12 @@ export interface OAuthProviderDef {
    * GitHub OAuth apps are like this unless they opt into expiring tokens.
    */
   nonExpiringToken?: true;
+  /** OAuth bearer destination pin: HTTPS exact host or subdomain only. */
+  allowedInferenceHosts?: string[];
+  /** Token-endpoint error codes that mean account entitlement, not bad credentials. */
+  entitlementErrors?: string[];
+  /** Actionable text used for entitlement errors during login, verify and refresh. */
+  entitlementMessage?: string;
 }
 
 export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
@@ -212,6 +220,35 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
       'Using SEVERAL accounts to stretch the quota is the pattern most associated with those suspensions: ' +
       'do not chain Copilot accounts with the failover order. Continue only if you accept the risk.',
   },
+  // xAI Grok device flow. Protocol facts reviewed 2026-09-01 against the
+  // MIT-licensed Hermes Agent implementation at 21b2095 and the official
+  // xai-org/grok-build source. This is a separate local session: no token is
+  // imported from either tool, so refresh-token rotation cannot break them.
+  xai: {
+    id: 'xai',
+    aliases: ['grok', 'xai'],
+    host: 'https://auth.x.ai',
+    clientId: 'b1a00492-073a-47ea-816f-4c329264a828',
+    flow: {
+      kind: 'device',
+      deviceAuthorizationPath: '/oauth2/device/code',
+      pollIntervalMs: 5000,
+      scope: 'openid profile email offline_access grok-cli:access api:access',
+    },
+    tokenPath: '/oauth2/token',
+    verifyUrl: 'https://api.x.ai/v1/models',
+    importPaths: [],
+    defaultProfileId: 'grok-sub',
+    allowedInferenceHosts: ['x.ai'],
+    entitlementErrors: ['permission_denied'],
+    entitlementMessage:
+      'This xAI account is not entitled to OAuth inference. Re-logging in will not change the account tier; ' +
+      'set XAI_API_KEY and use the Grok API-key profile instead.',
+    suspensionWarning:
+      'xAI does not document third-party use of the Grok CLI OAuth client as a supported public API. ' +
+      'Access can be restricted by account tier and may return 403 even when the web subscription is active. ' +
+      'The XAI_API_KEY path is the supported fallback. Continue only if you accept this compatibility risk.',
+  },
 };
 
 export function findOAuthProvider(name: string): OAuthProviderDef | undefined {
@@ -249,9 +286,9 @@ export function tokenUrl(def: OAuthProviderDef): string {
   return (def.tokenHost ?? def.host) + def.tokenPath;
 }
 
-/** A descriptor narrowed to the device flow (Kimi): the only caller of the RFC 8628 helpers. */
+/** A descriptor narrowed to the RFC 8628 device flow. */
 export type DeviceOAuthProviderDef = OAuthProviderDef & {
-  flow: { kind: 'device'; deviceAuthorizationPath: string; pollIntervalMs: number };
+  flow: { kind: 'device'; deviceAuthorizationPath: string; pollIntervalMs: number; scope?: string };
 };
 
 /** Narrow a descriptor to the device flow, or throw (a pkce descriptor here is a programming error). */
